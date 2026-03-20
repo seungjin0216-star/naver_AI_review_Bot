@@ -10,7 +10,7 @@ const CONFIG = {
   NAVER_REDIRECT_URI: window.location.origin + "/callback",
   // ★ Google AI Studio에서 발급받은 Gemini API Key 입력
   // 발급 주소: https://aistudio.google.com/app/apikey
-  GEMINI_API_KEY: "AIzaSyA6qxRGBChLTblx3EFvg3zz1VQO-cJmAlU",
+  GEMINI_API_KEY: "AIzaSyCzPOVkAiXwyUuAJmA_7di1ZvCReZXm4vw",
 };
 
 // ============================================================
