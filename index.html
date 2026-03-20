@@ -339,9 +339,15 @@
   <!-- Settings Panel -->
   <div id="settingsPanel">
     <div class="settingsInner">
-      <p class="settingsLabel">🤖 AI 답글 생성 지시사항 (프롬프트 커스터마이징)</p>
-      <textarea class="settingsTextarea" id="customPrompt" rows="3">장수한우곱창 백석직영점 사장님 톤으로, 당일도축 한우의 신선함을 강조하며, 따뜻하고 친근하게, 이모지 1-2개 포함, 150-250자 이내로 답글을 작성해주세요.</textarea>
-      <p class="settingsNote">매장 특징, 원하는 톤, 이모지 여부, 글자수 등을 자유롭게 지정하세요</p>
+      <p class="settingsLabel">🤖 현재 적용 중인 AI 답글 프롬프트</p>
+      <div style="background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:14px;font-size:12px;color:#aaa;line-height:1.8;">
+        ✅ 도입: "안녕하세요 장수한우곱창 백석직영점입니다 🐮✨" 고정<br>
+        ✅ 리뷰 키워드(메뉴, 아이동반, 직원친절 등) 반드시 인용<br>
+        ✅ 당일도축 신선한 한우 / 잡내 없는 고소한 풍미 자연스럽게 언급<br>
+        ✅ 재방문 기대 + 감사 인사로 마무리<br>
+        🚫 홍보/영업용 문구 금지 | 🚫 기계적 반복 답변 금지
+      </div>
+      <p class="settingsNote">프롬프트 수정이 필요하면 GitHub api/generate.js 파일을 편집하세요</p>
     </div>
   </div>
 
@@ -621,7 +627,6 @@ function handleOverlayClick(e) {
 async function generateReply() {
   if (!selectedReview) return;
 
-  const customPrompt = document.getElementById("customPrompt").value;
   const textarea = document.getElementById("replyTextarea");
   const genBox = document.getElementById("generatingBox");
   const btnPost = document.getElementById("btnPost");
@@ -631,31 +636,18 @@ async function generateReply() {
   btnPost.disabled = true;
   document.getElementById("replyCount").textContent = "";
 
-  const prompt = `
-당신은 "${selectedReview.platform === "naver" ? "네이버 플레이스" : "배달앱"}" 리뷰에 답글을 다는 장수한우곱창 사장님입니다.
-
-[매장 정보]
-- 매장명: 장수한우곱창 백석직영점
-- 특징: 당일도축 한우만 사용, 잡내 없는 고소한 곱창/대창
-
-[답글 스타일 예시]
-${REPLY_EXAMPLES.map((e, i) => `예시${i+1})\n리뷰: ${e.review}\n답글: ${e.reply}`).join("\n\n")}
-
-[추가 지시사항]
-${customPrompt}
-
-[작성할 리뷰]
-별점: ${selectedReview.rating}점
-태그: ${selectedReview.tags.join(", ") || "없음"}
-내용: ${selectedReview.content}
-
-위 리뷰에 대한 사장님 답글만 작성하세요. 설명 없이 답글 내용만 출력하세요.`;
-
   try {
     const res = await fetch("/api/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt }),
+      body: JSON.stringify({
+        review: {
+          rating: selectedReview.rating,
+          platform: selectedReview.platform,
+          tags: selectedReview.tags,
+          content: selectedReview.content,
+        }
+      }),
     });
     const data = await res.json();
     if (data.error) throw new Error(data.error);
