@@ -538,7 +538,7 @@ function enterMain() {
 // ─────────────────────────────────────────
 async function fetchReviews() {
   if (!CONFIG.BUSINESS_ID) {
-    // BUSINESS_ID 미설정 시 샘플 데이터 사용
+    // BUSINESS_ID: "8250200"
     updateStats();
     renderReviews();
     showToast("샘플 데이터 표시 중 (BUSINESS_ID 설정 필요)", "success");
