@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>리뷰 AI 답글 시스템 · 장수한우곱창</title>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;900&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Noto Sans KR', sans-serif;
+      background: #f5f6f8;
+      min-height: 100vh;
+    }
+
+    /* ── LOGIN ── */
+    #loginScreen {
+      min-height: 100vh;
+      display: flex; align-items: center; justify-content: center;
+      background: linear-gradient(135deg, #0f0f0f 0%, #1a1a2e 50%, #16213e 100%);
+      padding: 20px;
+    }
+    .loginCard {
+      background: rgba(255,255,255,0.04);
+      backdrop-filter: blur(20px);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 24px;
+      padding: 48px 40px;
+      width: 100%; max-width: 400px;
+      text-align: center;
+      box-shadow: 0 32px 64px rgba(0,0,0,0.4);
+    }
+    .loginLogo {
+      width: 64px; height: 64px; border-radius: 18px;
+      background: linear-gradient(135deg, #03C75A, #00a847);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 28px; font-weight: 900; color: white;
+      margin: 0 auto 24px;
+      box-shadow: 0 8px 24px rgba(3,199,90,0.3);
+    }
+    .loginTitle { color: white; font-size: 22px; font-weight: 700; margin-bottom: 8px; }
+    .loginSub { color: rgba(255,255,255,0.5); font-size: 14px; line-height: 1.6; margin-bottom: 36px; }
+    .btnNaver {
+      width: 100%; padding: 16px;
+      background: #03C75A; color: white;
+      border: none; border-radius: 12px;
+      font-size: 16px; font-weight: 700; cursor: pointer;
+      font-family: 'Noto Sans KR', sans-serif;
+      box-shadow: 0 4px 16px rgba(3,199,90,0.3);
+      transition: background 0.2s;
+    }
+    .btnNaver:hover { background: #02b350; }
+    .loginNote { color: rgba(255,255,255,0.2); font-size: 12px; margin-top: 20px; line-height: 1.6; }
+
+    /* ── MAIN ── */
+    #mainScreen { display: none; }
+
+    /* Header */
+    .header {
+      background: white;
+      border-bottom: 1px solid #eee;
+      padding: 0 20px;
+      display: flex; align-items: center; justify-content: space-between;
+      height: 60px;
+      position: sticky; top: 0; z-index: 100;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    }
+    .headerLeft { display: flex; align-items: center; gap: 10px; }
+    .headerLogo {
+      width: 32px; height: 32px; border-radius: 8px;
+      background: #03C75A;
+      display: flex; align-items: center; justify-content: center;
+      color: white; font-weight: 900; font-size: 14px;
+    }
+    .headerTitle { font-weight: 700; font-size: 15px; color: #111; }
+    .headerSub { font-size: 11px; color: #999; }
+    .headerRight { display: flex; gap: 8px; }
+    .btnHeader {
+      padding: 7px 14px; border: none; border-radius: 8px;
+      font-size: 13px; cursor: pointer;
+      font-family: 'Noto Sans KR', sans-serif;
+      transition: all 0.2s;
+    }
+    .btnRefresh { background: #f0f0f0; color: #555; }
+    .btnRefresh:hover { background: #e5e5e5; }
+    .btnSettings { background: #f0f0f0; color: #555; }
+    .btnSettings.active { background: #111; color: white; }
+
+    /* Settings Panel */
+    #settingsPanel {
+      display: none;
+      background: #111; color: white;
+      padding: 20px;
+      border-bottom: 1px solid #333;
+    }
+    .settingsInner { max-width: 800px; margin: 0 auto; }
+    .settingsLabel { font-size: 13px; color: #aaa; margin-bottom: 8px; }
+    .settingsTextarea {
+      width: 100%; background: #222; color: white;
+      border: 1px solid #444; border-radius: 8px;
+      padding: 10px 12px; font-size: 13px; line-height: 1.6;
+      resize: vertical; font-family: 'Noto Sans KR', sans-serif;
+    }
+    .settingsTextarea:focus { outline: none; border-color: #03C75A; }
+    .settingsNote { font-size: 12px; color: #555; margin-top: 8px; }
+
+    /* Content */
+    .content { max-width: 900px; margin: 0 auto; padding: 20px; }
+
+    /* Stats */
+    .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 20px; }
+    .statCard {
+      background: white; border-radius: 14px; padding: 16px 20px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    }
+    .statNum { font-size: 24px; font-weight: 900; }
+    .statLabel { font-size: 13px; color: #888; margin-top: 2px; }
+
+    /* Filter */
+    .filterBar { display: flex; gap: 8px; margin-bottom: 16px; }
+    .btnFilter {
+      padding: 8px 18px; border-radius: 100px;
+      font-size: 13px; font-weight: 600; cursor: pointer;
+      font-family: 'Noto Sans KR', sans-serif;
+      transition: all 0.2s;
+    }
+    .btnFilter.active { background: #111; color: white; border: none; }
+    .btnFilter.inactive { background: white; color: #666; border: 1px solid #ddd; }
+
+    /* Review List */
+    .reviewList { display: flex; flex-direction: column; gap: 12px; }
+    .emptyState {
+      background: white; border-radius: 14px; padding: 40px;
+      text-align: center; color: #aaa; font-size: 15px;
+    }
+
+    /* Review Card */
+    .reviewCard {
+      background: white; border-radius: 14px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+      overflow: hidden;
+      border: 2px solid transparent;
+      transition: border 0.2s;
+    }
+    .reviewCard.selected { border-color: #111; }
+    .reviewBody { padding: 16px 20px 12px; }
+    .reviewTop {
+      display: flex; justify-content: space-between; align-items: flex-start;
+      margin-bottom: 8px;
+    }
+    .reviewTopLeft { display: flex; align-items: center; gap: 8px; }
+    .reviewTopRight { display: flex; align-items: center; gap: 8px; }
+    .platformBadge {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 28px; height: 28px; border-radius: 8px;
+      font-size: 12px; font-weight: 700;
+    }
+    .reviewAuthor { font-weight: 700; font-size: 15px; }
+    .stars { color: #FFB800; font-size: 14px; letter-spacing: 1px; }
+    .reviewDate { font-size: 12px; color: #bbb; }
+    .badgeReplied {
+      font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 6px;
+      color: #00b894; background: #f0faf7;
+    }
+    .badgeUnreplied {
+      font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 6px;
+      color: #e17055; background: #fff5f3;
+    }
+    .tags { display: flex; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
+    .tag {
+      font-size: 12px; color: #555;
+      background: #f5f5f5; padding: 2px 10px;
+      border-radius: 100px; border: 1px solid #eee;
+    }
+    .reviewContent { font-size: 14px; line-height: 1.7; color: #333; }
+    .existingReply {
+      margin-top: 12px; padding: 12px 14px;
+      background: #f8f9fa; border-radius: 10px;
+      border-left: 3px solid #00b894;
+    }
+    .existingReplyLabel { font-size: 11px; color: #00b894; font-weight: 700; margin-bottom: 4px; }
+    .existingReplyText { font-size: 13px; color: #555; line-height: 1.6; }
+    .reviewActions {
+      padding: 12px 20px;
+      background: #fafafa;
+      border-top: 1px solid #f0f0f0;
+      display: flex; justify-content: flex-end;
+    }
+    .btnGenerate {
+      padding: 9px 20px;
+      background: linear-gradient(135deg, #111, #333);
+      color: white; border: none; border-radius: 10px;
+      font-size: 13px; font-weight: 700; cursor: pointer;
+      font-family: 'Noto Sans KR', sans-serif;
+      display: flex; align-items: center; gap: 6px;
+      transition: opacity 0.2s;
+    }
+    .btnGenerate:hover { opacity: 0.85; }
+
+    /* Modal Overlay */
+    #modalOverlay {
+      display: none;
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.6);
+      align-items: flex-end; justify-content: center;
+      z-index: 1000;
+    }
+    #modalOverlay.show { display: flex; }
+    .modal {
+      background: white; width: 100%; max-width: 600px;
+      border-radius: 20px 20px 0 0;
+      padding: 24px 24px 40px;
+      max-height: 85vh; overflow-y: auto;
+    }
+    .modalHeader {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 16px;
+    }
+    .modalTitle { font-size: 17px; font-weight: 700; }
+    .btnClose {
+      background: none; border: none; font-size: 22px;
+      cursor: pointer; color: #999; line-height: 1;
+    }
+    .modalReview {
+      background: #f8f9fa; border-radius: 12px; padding: 14px;
+      margin-bottom: 16px; font-size: 14px; color: #555; line-height: 1.7;
+    }
+    .modalReviewHeader {
+      font-weight: 700; color: #111; margin-bottom: 6px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .replyLabel { font-size: 13px; font-weight: 700; color: #111; margin-bottom: 8px; }
+    .generatingBox {
+      background: #f8f9fa; border-radius: 12px; padding: 28px;
+      text-align: center; color: #aaa; font-size: 14px;
+    }
+    .generatingIcon { font-size: 28px; margin-bottom: 8px; }
+    .replyTextarea {
+      width: 100%; border: 1px solid #e0e0e0; border-radius: 12px;
+      padding: 14px; font-size: 14px; line-height: 1.7; color: #333;
+      resize: vertical; font-family: 'Noto Sans KR', sans-serif;
+      min-height: 140px;
+    }
+    .replyTextarea:focus { outline: none; border-color: #111; }
+    .replyCount { font-size: 12px; color: #aaa; text-align: right; margin-top: 4px; }
+    .modalActions { display: flex; gap: 10px; margin-top: 16px; }
+    .btnRegen {
+      flex: 1; padding: 14px;
+      background: #f0f0f0; border: none; border-radius: 12px;
+      font-size: 14px; font-weight: 600; cursor: pointer; color: #555;
+      font-family: 'Noto Sans KR', sans-serif;
+    }
+    .btnRegen:hover { background: #e5e5e5; }
+    .btnPost {
+      flex: 2; padding: 14px;
+      background: linear-gradient(135deg, #03C75A, #00a847);
+      border: none; border-radius: 12px;
+      font-size: 14px; font-weight: 700; cursor: pointer; color: white;
+      font-family: 'Noto Sans KR', sans-serif;
+      box-shadow: 0 4px 16px rgba(3,199,90,0.3);
+      transition: opacity 0.2s;
+    }
+    .btnPost:hover { opacity: 0.9; }
+    .btnPost:disabled { background: #ccc; box-shadow: none; cursor: not-allowed; }
+
+    /* Toast */
+    #toast {
+      position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+      padding: 12px 24px; border-radius: 100px;
+      font-size: 14px; font-weight: 600; color: white;
+      z-index: 9999; display: none;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+      font-family: 'Noto Sans KR', sans-serif;
+      white-space: nowrap;
+    }
+    #toast.show { display: block; animation: fadeInDown 0.3s ease; }
+    #toast.success { background: #2ed573; }
+    #toast.error { background: #ff4757; }
+
+    @keyframes fadeInDown {
+      from { opacity: 0; transform: translateX(-50%) translateY(-10px); }
+      to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+    }
+
+    /* Spinner */
+    .spinner {
+      display: inline-block; width: 20px; height: 20px;
+      border: 3px solid rgba(255,255,255,0.3);
+      border-top-color: white; border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    @media (max-width: 500px) {
+      .stats { grid-template-columns: repeat(3, 1fr); gap: 8px; }
+      .statCard { padding: 12px; }
+      .statNum { font-size: 20px; }
+      .loginCard { padding: 36px 24px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ════════════════════════════════════════
+     LOGIN SCREEN
+════════════════════════════════════════ -->
+<div id="loginScreen">
+  <div class="loginCard">
+    <div class="loginLogo">N</div>
+    <h1 class="loginTitle">리뷰 AI 답글 시스템</h1>
+    <p class="loginSub">네이버 스마트플레이스 리뷰를<br>AI로 빠르게 관리하세요</p>
+    <button class="btnNaver" onclick="handleLogin()">
+      N &nbsp; 네이버로 로그인
+    </button>
+    <p class="loginNote">네이버 개발자센터 Client ID가<br>설정되어 있어야 실제 연동됩니다</p>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════
+     MAIN SCREEN
+════════════════════════════════════════ -->
+<div id="mainScreen">
+
+  <!-- Header -->
+  <div class="header">
+    <div class="headerLeft">
+      <div class="headerLogo">N</div>
+      <div>
+        <div class="headerTitle">장수한우곱창</div>
+        <div class="headerSub">AI 리뷰 답글 관리</div>
+      </div>
+    </div>
+    <div class="headerRight">
+      <button class="btnHeader btnRefresh" onclick="fetchReviews()">🔄 새로고침</button>
+      <button class="btnHeader btnSettings" id="settingsBtn" onclick="toggleSettings()">⚙️ 설정</button>
+    </div>
+  </div>
+
+  <!-- Settings Panel -->
+  <div id="settingsPanel">
+    <div class="settingsInner">
+      <p class="settingsLabel">🤖 AI 답글 생성 지시사항 (프롬프트 커스터마이징)</p>
+      <textarea class="settingsTextarea" id="customPrompt" rows="3">장수한우곱창 백석직영점 사장님 톤으로, 당일도축 한우의 신선함을 강조하며, 따뜻하고 친근하게, 이모지 1-2개 포함, 150-250자 이내로 답글을 작성해주세요.</textarea>
+      <p class="settingsNote">매장 특징, 원하는 톤, 이모지 여부, 글자수 등을 자유롭게 지정하세요</p>
+    </div>
+  </div>
+
+  <!-- Content -->
+  <div class="content">
+
+    <!-- Stats -->
+    <div class="stats">
+      <div class="statCard" style="border-left: 4px solid #6c5ce7;">
+        <div class="statNum" id="statTotal" style="color:#6c5ce7;">0</div>
+        <div class="statLabel">전체 리뷰</div>
+      </div>
+      <div class="statCard" style="border-left: 4px solid #e17055;">
+        <div class="statNum" id="statUnreplied" style="color:#e17055;">0</div>
+        <div class="statLabel">미답글</div>
+      </div>
+      <div class="statCard" style="border-left: 4px solid #00b894;">
+        <div class="statNum" id="statReplied" style="color:#00b894;">0</div>
+        <div class="statLabel">답글 완료</div>
+      </div>
+    </div>
+
+    <!-- Filter -->
+    <div class="filterBar">
+      <button class="btnFilter active" id="filterUnreplied" onclick="setFilter('unreplied')">미답글만</button>
+      <button class="btnFilter inactive" id="filterAll" onclick="setFilter('all')">전체</button>
+    </div>
+
+    <!-- Review List -->
+    <div class="reviewList" id="reviewList"></div>
+
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════
+     MODAL
+════════════════════════════════════════ -->
+<div id="modalOverlay" onclick="handleOverlayClick(event)">
+  <div class="modal">
+    <div class="modalHeader">
+      <span class="modalTitle">AI 답글 생성</span>
+      <button class="btnClose" onclick="closeModal()">×</button>
+    </div>
+
+    <!-- 원본 리뷰 -->
+    <div class="modalReview">
+      <div class="modalReviewHeader" id="modalReviewHeader"></div>
+      <div id="modalReviewContent"></div>
+    </div>
+
+    <!-- 생성된 답글 -->
+    <div class="replyLabel">생성된 답글</div>
+    <div id="generatingBox" class="generatingBox" style="display:none;">
+      <div class="generatingIcon">✨</div>
+      Gemini AI가 답글을 생성하고 있습니다...
+    </div>
+    <textarea class="replyTextarea" id="replyTextarea"
+      placeholder="AI 답글 생성 버튼을 누르면 여기에 답글이 나타납니다..."
+      oninput="updateCount()"></textarea>
+    <div class="replyCount" id="replyCount"></div>
+
+    <!-- 버튼 -->
+    <div class="modalActions">
+      <button class="btnRegen" onclick="regenReply()">🔄 재생성</button>
+      <button class="btnPost" id="btnPost" onclick="postReply()" disabled>✓ 답글 등록</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast"></div>
+
+<!-- ════════════════════════════════════════
+     SCRIPT
+════════════════════════════════════════ -->
+<script>
+// ─────────────────────────────────────────
+// ★★★ 여기에 본인 키 입력 ★★★
+// ─────────────────────────────────────────
+const CONFIG = {
+  GEMINI_API_KEY: "YOUR_GEMINI_API_KEY",   // ← Gemini 키 입력
+  NAVER_CLIENT_ID: "",                      // ← 나중에 입력
+  NAVER_REDIRECT_URI: "",                   // ← 나중에 입력
+};
+
+// ─────────────────────────────────────────
+// 샘플 리뷰 데이터 (실제 연동 전 테스트용)
+// ─────────────────────────────────────────
+let reviews = [
+  {
+    id: "rev_001", platform: "naver", author: "지현**",
+    date: "2026-03-15", rating: 5,
+    content: "친구추천으로 왔는데 곱창이 정말 신선하고 맛있었어요! 잡내가 전혀 없고 고소한 맛이 일품이었습니다. 직원분들도 너무 친절하시고 다음에도 꼭 올게요~",
+    tags: ["음식이 맛있어요", "친절해요"], replied: false,
+  },
+  {
+    id: "rev_002", platform: "naver", author: "맛집탐방**",
+    date: "2026-03-14", rating: 5,
+    content: "백석역 근처 곱창 맛집 찾다가 왔는데 대박이네요. 당일도축 한우라서 그런지 신선도가 달라요. 대창이 특히 맛있었고 반찬도 깔끔하게 잘 나왔어요.",
+    tags: ["음식이 맛있어요", "고기 질이 좋아요"], replied: false,
+  },
+  {
+    id: "rev_003", platform: "naver", author: "abc****",
+    date: "2026-03-13", rating: 4,
+    content: "초등아들이랑 남편이랑 재방문입니다! 아이도 곱창을 너무 맛있게 잘 먹네요. 다른 집들보다 대창이랑 곱창이 너무 맛있고 잡내 전혀없고 고소합니다.",
+    tags: ["음식이 맛있어요", "반찬이 잘 나와요"], replied: true,
+    existingReply: "초딩 아드님과 함께 다시 찾아주셔서 정말 감사합니다! 😊 아이도 곱창을 맛있게 잘 먹었다니 저희도 너무 뿌듯해요!",
+  },
+  {
+    id: "rev_004", platform: "baemin", author: "당당45",
+    date: "2026-03-12", rating: 5,
+    content: "방어가 제철이라 한 번 시켜봤는데 정말 기름지고 너무 맛있어요!! 다음에 또 주문할게요!",
+    tags: [], replied: false,
+  },
+];
+
+// 답글 스타일 예시 (AI few-shot)
+const REPLY_EXAMPLES = [
+  {
+    review: "사진까지 예쁘게 찍어주시고 정성 가득한 후기 감사합니다.",
+    reply: "사진까지 예쁘게 찍어주시고 정성 가득한 후기 감사합니다! 사진 보니 저도 배가 고파지네요. 다음 방문 때는 더 큰 감동 드릴 수 있도록 연구하고 노력하겠습니다!"
+  },
+  {
+    review: "초등아들이랑 남편이랑 재방문입니다! 아이도 곱창을 너무 맛있게 잘 먹네요.",
+    reply: "초딩 아드님과 함께 다시 찾아주셔서 정말 감사합니다! 😊 아이도 곱창을 맛있게 잘 먹었다니 저희도 너무 뿌듯해요! 잡내 없이 고소한 대창과 곱창이 당일 도축한 신선한 한우라서 그런가 봐요~ 👍 다음에도 맛있는 곱창으로 보답하는 장수한우곱창 백석직영점이 되겠습니다!"
+  },
+];
+
+// ─────────────────────────────────────────
+// 상태값
+// ─────────────────────────────────────────
+let currentFilter = "unreplied";
+let selectedReview = null;
+let settingsOpen = false;
+
+// ─────────────────────────────────────────
+// 플랫폼 설정
+// ─────────────────────────────────────────
+const platforms = {
+  naver:   { bg: "#03C75A", color: "white", label: "N" },
+  baemin:  { bg: "#2AC1BC", color: "white", label: "배" },
+  yogiyo:  { bg: "#FA0050", color: "white", label: "요" },
+  coupang: { bg: "#FECD00", color: "#333",  label: "쿠" },
+  ddangyo: { bg: "#FF6B00", color: "white", label: "땡" },
+};
+
+function platformBadge(platform) {
+  const p = platforms[platform] || platforms.naver;
+  return `<span class="platformBadge" style="background:${p.bg};color:${p.color};">${p.label}</span>`;
+}
+
+function stars(rating) {
+  return `<span class="stars">${"★".repeat(rating)}${"☆".repeat(5 - rating)}</span>`;
+}
+
+// ─────────────────────────────────────────
+// 로그인
+// ─────────────────────────────────────────
+function handleLogin() {
+  // 실제 네이버 OAuth (Client ID 입력 후 주석 해제)
+  // const state = Math.random().toString(36).substring(2);
+  // sessionStorage.setItem("naver_state", state);
+  // const url = `https://nid.naver.com/oauth2.0/authorize?response_type=code&client_id=${CONFIG.NAVER_CLIENT_ID}&redirect_uri=${encodeURIComponent(CONFIG.NAVER_REDIRECT_URI)}&state=${state}`;
+  // window.location.href = url;
+
+  // 데모: 바로 진입
+  document.getElementById("loginScreen").style.display = "none";
+  document.getElementById("mainScreen").style.display = "block";
+  fetchReviews();
+}
+
+// ─────────────────────────────────────────
+// 리뷰 불러오기 (샘플 / 실제 연동 후 교체)
+// ─────────────────────────────────────────
+function fetchReviews() {
+  updateStats();
+  renderReviews();
+  showToast("리뷰를 불러왔습니다 ✓", "success");
+}
+
+// ─────────────────────────────────────────
+// 렌더링
+// ─────────────────────────────────────────
+function updateStats() {
+  document.getElementById("statTotal").textContent = reviews.length;
+  document.getElementById("statUnreplied").textContent = reviews.filter(r => !r.replied).length;
+  document.getElementById("statReplied").textContent = reviews.filter(r => r.replied).length;
+}
+
+function setFilter(f) {
+  currentFilter = f;
+  document.getElementById("filterUnreplied").className = "btnFilter " + (f === "unreplied" ? "active" : "inactive");
+  document.getElementById("filterAll").className = "btnFilter " + (f === "all" ? "active" : "inactive");
+  renderReviews();
+}
+
+function renderReviews() {
+  const list = document.getElementById("reviewList");
+  const filtered = reviews.filter(r => currentFilter === "all" ? true : !r.replied);
+
+  if (filtered.length === 0) {
+    list.innerHTML = `<div class="emptyState">🎉 모든 리뷰에 답글을 달았습니다!</div>`;
+    return;
+  }
+
+  list.innerHTML = filtered.map(r => `
+    <div class="reviewCard ${selectedReview?.id === r.id ? 'selected' : ''}" id="card-${r.id}">
+      <div class="reviewBody">
+        <div class="reviewTop">
+          <div class="reviewTopLeft">
+            ${platformBadge(r.platform)}
+            <span class="reviewAuthor">${r.author}</span>
+            ${stars(r.rating)}
+          </div>
+          <div class="reviewTopRight">
+            <span class="reviewDate">${r.date}</span>
+            ${r.replied
+              ? `<span class="badgeReplied">✓ 답글완료</span>`
+              : `<span class="badgeUnreplied">미답글</span>`}
+          </div>
+        </div>
+        ${r.tags.length ? `<div class="tags">${r.tags.map(t => `<span class="tag">${t}</span>`).join("")}</div>` : ""}
+        <p class="reviewContent">${r.content}</p>
+        ${r.replied && r.existingReply ? `
+          <div class="existingReply">
+            <div class="existingReplyLabel">사장님 답글</div>
+            <div class="existingReplyText">${r.existingReply}</div>
+          </div>` : ""}
+      </div>
+      ${!r.replied ? `
+        <div class="reviewActions">
+          <button class="btnGenerate" onclick="openModal('${r.id}')">✨ AI 답글 생성</button>
+        </div>` : ""}
+    </div>
+  `).join("");
+}
+
+// ─────────────────────────────────────────
+// 설정 패널
+// ─────────────────────────────────────────
+function toggleSettings() {
+  settingsOpen = !settingsOpen;
+  document.getElementById("settingsPanel").style.display = settingsOpen ? "block" : "none";
+  document.getElementById("settingsBtn").classList.toggle("active", settingsOpen);
+}
+
+// ─────────────────────────────────────────
+// 모달
+// ─────────────────────────────────────────
+function openModal(reviewId) {
+  selectedReview = reviews.find(r => r.id === reviewId);
+  if (!selectedReview) return;
+
+  document.getElementById("modalReviewHeader").innerHTML =
+    `${platformBadge(selectedReview.platform)} ${selectedReview.author} · ${stars(selectedReview.rating)}`;
+  document.getElementById("modalReviewContent").textContent = selectedReview.content;
+  document.getElementById("replyTextarea").value = "";
+  document.getElementById("replyCount").textContent = "";
+  document.getElementById("btnPost").disabled = true;
+
+  document.getElementById("modalOverlay").classList.add("show");
+  generateReply();
+}
+
+function closeModal() {
+  document.getElementById("modalOverlay").classList.remove("show");
+  selectedReview = null;
+  renderReviews();
+}
+
+function handleOverlayClick(e) {
+  if (e.target === document.getElementById("modalOverlay")) closeModal();
+}
+
+// ─────────────────────────────────────────
+// Gemini AI 답글 생성
+// ─────────────────────────────────────────
+async function generateReply() {
+  if (!selectedReview) return;
+
+  const customPrompt = document.getElementById("customPrompt").value;
+  const textarea = document.getElementById("replyTextarea");
+  const genBox = document.getElementById("generatingBox");
+  const btnPost = document.getElementById("btnPost");
+
+  textarea.style.display = "none";
+  genBox.style.display = "block";
+  btnPost.disabled = true;
+  document.getElementById("replyCount").textContent = "";
+
+  const prompt = `
+당신은 "${selectedReview.platform === "naver" ? "네이버 플레이스" : "배달앱"}" 리뷰에 답글을 다는 장수한우곱창 사장님입니다.
+
+[매장 정보]
+- 매장명: 장수한우곱창 백석직영점
+- 특징: 당일도축 한우만 사용, 잡내 없는 고소한 곱창/대창
+
+[답글 스타일 예시]
+${REPLY_EXAMPLES.map((e, i) => `예시${i+1})\n리뷰: ${e.review}\n답글: ${e.reply}`).join("\n\n")}
+
+[추가 지시사항]
+${customPrompt}
+
+[작성할 리뷰]
+별점: ${selectedReview.rating}점
+태그: ${selectedReview.tags.join(", ") || "없음"}
+내용: ${selectedReview.content}
+
+위 리뷰에 대한 사장님 답글만 작성하세요. 설명 없이 답글 내용만 출력하세요.`;
+
+  try {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${CONFIG.GEMINI_API_KEY}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { maxOutputTokens: 600, temperature: 0.8 },
+        }),
+      }
+    );
+    const data = await res.json();
+    if (data.error) throw new Error(data.error.message);
+    const reply = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || "답글 생성에 실패했습니다.";
+    textarea.value = reply;
+    updateCount();
+    btnPost.disabled = false;
+  } catch (e) {
+    textarea.value = "⚠️ Gemini API 오류: " + e.message + "\n\nCONFIG의 GEMINI_API_KEY를 확인해주세요.";
+  }
+
+  genBox.style.display = "none";
+  textarea.style.display = "block";
+}
+
+function regenReply() { generateReply(); }
+
+function updateCount() {
+  const v = document.getElementById("replyTextarea").value;
+  document.getElementById("replyCount").textContent = v ? `${v.length}자 · 직접 수정 가능합니다` : "";
+  document.getElementById("btnPost").disabled = !v.trim();
+}
+
+// ─────────────────────────────────────────
+// 답글 등록
+// ─────────────────────────────────────────
+async function postReply() {
+  const reply = document.getElementById("replyTextarea").value.trim();
+  if (!reply || !selectedReview) return;
+
+  const btnPost = document.getElementById("btnPost");
+  btnPost.disabled = true;
+  btnPost.textContent = "등록 중...";
+
+  // 실제 연동 시:
+  // await fetch(`https://smartplace.naver.com/businessticket/reviews/${selectedReview.id}/reply`, {
+  //   method: "POST",
+  //   headers: { "Content-Type": "application/json" },
+  //   body: JSON.stringify({ content: reply }),
+  //   credentials: "include",
+  // });
+
+  await new Promise(r => setTimeout(r, 1000)); // 데모 딜레이
+
+  reviews = reviews.map(r =>
+    r.id === selectedReview.id
+      ? { ...r, replied: true, existingReply: reply }
+      : r
+  );
+
+  updateStats();
+  closeModal();
+  showToast("✅ 답글이 등록되었습니다!", "success");
+  btnPost.textContent = "✓ 답글 등록";
+}
+
+// ─────────────────────────────────────────
+// Toast
+// ─────────────────────────────────────────
+let toastTimer;
+function showToast(msg, type = "success") {
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.className = `show ${type}`;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.className = ""; }, 3000);
+}
+</script>
+</body>
+</html>
