@@ -429,8 +429,8 @@
 // ─────────────────────────────────────────
 const CONFIG = {
   NAVER_CLIENT_ID: "cgiHL807z3cs4hUv1tdy",
-  NAVER_REDIRECT_URI: "https://naver-ai-review-bot.vercel.app/api/callback",
-  BUSINESS_ID: "8250200", // ← 스마트플레이스 사업체 ID (아래 안내 참고)
+  NAVER_REDIRECT_URI: "https://naver-ai-review-bot.vercel.app/callback",
+  BUSINESS_ID: "", // ← 스마트플레이스 사업체 ID (아래 안내 참고)
 };
 
 // ─────────────────────────────────────────
@@ -538,7 +538,7 @@ function enterMain() {
 // ─────────────────────────────────────────
 async function fetchReviews() {
   if (!CONFIG.BUSINESS_ID) {
-    // BUSINESS_ID: "8250200"
+    // BUSINESS_ID 미설정 시 샘플 데이터 사용
     updateStats();
     renderReviews();
     showToast("샘플 데이터 표시 중 (BUSINESS_ID 설정 필요)", "success");
@@ -753,7 +753,7 @@ async function postReply() {
 // ─────────────────────────────────────────
 // Toast
 // ─────────────────────────────────────────
-let toastTimer;
+var toastTimer;
 function showToast(msg, type = "success") {
   const el = document.getElementById("toast");
   el.textContent = msg;
