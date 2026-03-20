@@ -428,8 +428,9 @@
 // API 키는 Vercel 환경변수에 저장 → 코드에 입력 불필요 (보안)
 // ─────────────────────────────────────────
 const CONFIG = {
-  NAVER_CLIENT_ID: "",    // ← 나중에 입력
-  NAVER_REDIRECT_URI: "", // ← 나중에 입력
+  NAVER_CLIENT_ID: "cgiHL807z3cs4hUv1tdy",
+  NAVER_REDIRECT_URI: "https://naver-ai-review-bot.vercel.app/callback",
+  BUSINESS_ID: "", // ← 스마트플레이스 사업체 ID (아래 안내 참고)
 };
 
 // ─────────────────────────────────────────
@@ -476,6 +477,20 @@ const REPLY_EXAMPLES = [
 ];
 
 // ─────────────────────────────────────────
+// 로그인 콜백 처리 (URL 파라미터 확인)
+// ─────────────────────────────────────────
+(function() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("login") === "success") {
+    history.replaceState({}, "", "/");
+    enterMain();
+  } else if (params.get("login") === "error") {
+    alert("로그인 오류: " + decodeURIComponent(params.get("msg") || ""));
+    history.replaceState({}, "", "/");
+  }
+})();
+
+// ─────────────────────────────────────────
 // 상태값
 // ─────────────────────────────────────────
 let currentFilter = "unreplied";
@@ -506,13 +521,13 @@ function stars(rating) {
 // 로그인
 // ─────────────────────────────────────────
 function handleLogin() {
-  // 실제 네이버 OAuth (Client ID 입력 후 주석 해제)
-  // const state = Math.random().toString(36).substring(2);
-  // sessionStorage.setItem("naver_state", state);
-  // const url = `https://nid.naver.com/oauth2.0/authorize?response_type=code&client_id=${CONFIG.NAVER_CLIENT_ID}&redirect_uri=${encodeURIComponent(CONFIG.NAVER_REDIRECT_URI)}&state=${state}`;
-  // window.location.href = url;
+  const state = Math.random().toString(36).substring(2);
+  sessionStorage.setItem("naver_state", state);
+  const url = `https://nid.naver.com/oauth2.0/authorize?response_type=code&client_id=${CONFIG.NAVER_CLIENT_ID}&redirect_uri=${encodeURIComponent(CONFIG.NAVER_REDIRECT_URI)}&state=${state}`;
+  window.location.href = url;
+}
 
-  // 데모: 바로 진입
+function enterMain() {
   document.getElementById("loginScreen").style.display = "none";
   document.getElementById("mainScreen").style.display = "block";
   fetchReviews();
@@ -521,10 +536,42 @@ function handleLogin() {
 // ─────────────────────────────────────────
 // 리뷰 불러오기 (샘플 / 실제 연동 후 교체)
 // ─────────────────────────────────────────
-function fetchReviews() {
-  updateStats();
-  renderReviews();
-  showToast("리뷰를 불러왔습니다 ✓", "success");
+async function fetchReviews() {
+  if (!CONFIG.BUSINESS_ID) {
+    // BUSINESS_ID 미설정 시 샘플 데이터 사용
+    updateStats();
+    renderReviews();
+    showToast("샘플 데이터 표시 중 (BUSINESS_ID 설정 필요)", "success");
+    return;
+  }
+
+  try {
+    showToast("리뷰를 불러오는 중...", "success");
+    const res = await fetch(`/api/reviews?businessId=${CONFIG.BUSINESS_ID}`);
+    const data = await res.json();
+
+    if (data.error) {
+      if (res.status === 401) {
+        // 로그인 만료
+        document.getElementById("mainScreen").style.display = "none";
+        document.getElementById("loginScreen").style.display = "flex";
+        showToast("로그인이 만료됐습니다. 다시 로그인해주세요.", "error");
+        return;
+      }
+      throw new Error(data.error);
+    }
+
+    reviews = data.reviews;
+    updateStats();
+    renderReviews();
+    showToast(`리뷰 ${reviews.length}개를 불러왔습니다 ✓`, "success");
+
+  } catch (e) {
+    showToast("리뷰 불러오기 실패: " + e.message, "error");
+    // 실패 시 샘플 데이터 유지
+    updateStats();
+    renderReviews();
+  }
 }
 
 // ─────────────────────────────────────────
