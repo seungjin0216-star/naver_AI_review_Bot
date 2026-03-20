@@ -15,7 +15,7 @@ export default async function handler(req, res) {
     if (!apiKey) return res.status(500).json({ error: "GEMINI_API_KEY not configured" });
 
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
