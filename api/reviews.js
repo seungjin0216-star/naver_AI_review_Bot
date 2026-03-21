@@ -15,63 +15,56 @@ export default async function handler(req, res) {
   const token = cookies["naver_token"];
   if (!token) return res.status(401).json({ error: "로그인이 필요합니다" });
 
-  const businessId = req.query.businessId;
-  if (!businessId) return res.status(400).json({ error: "businessId is required" });
+  const businessId = req.query.businessId || "8250200";
 
-  try {
-    // 네이버 스마트플레이스 리뷰 API 호출
-    const reviewRes = await fetch(
-      `https://api.place.naver.com/place/v1/businesses/${businessId}/reviews?page=1&size=20&sort=RECENTLY`,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-          "User-Agent": "Mozilla/5.0",
-        },
+  // 시도할 엔드포인트 목록
+  const endpoints = [
+    `https://smartplace.naver.com/businessticket/v1/businesses/${businessId}/reviews?page=1&size=20`,
+    `https://smartplace.naver.com/v1/businesses/${businessId}/reviews?page=1&size=20`,
+    `https://m.place.naver.com/place/${businessId}/review/visitor?page=1&display=20`,
+  ];
+
+  const headers = {
+    "Authorization": `Bearer ${token}`,
+    "Cookie": `NID_AUT=${token}`,
+    "Content-Type": "application/json",
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+    "Referer": "https://smartplace.naver.com/",
+    "Accept": "application/json",
+  };
+
+  let lastError = "";
+
+  for (const url of endpoints) {
+    try {
+      const r = await fetch(url, { headers });
+      const text = await r.text();
+
+      // HTML 응답이면 스킵
+      if (text.trim().startsWith("<")) {
+        lastError = `${url} → HTML 응답 (${r.status})`;
+        continue;
       }
-    );
 
-    const rawText = await reviewRes.text();
-
-    // 응답 디버깅용 로그
-    console.log("Status:", reviewRes.status);
-    console.log("Response:", rawText.slice(0, 500));
-
-    if (!reviewRes.ok) {
-      // 토큰으로 직접 안되면 스마트플레이스 웹 API 시도
-      const reviewRes2 = await fetch(
-        `https://smartplace.naver.com/v1/businesses/${businessId}/reviews?page=1&limit=20`,
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0",
-            Referer: "https://smartplace.naver.com/",
-          },
-        }
-      );
-
-      const rawText2 = await reviewRes2.text();
-      console.log("Status2:", reviewRes2.status);
-      console.log("Response2:", rawText2.slice(0, 500));
-
-      if (!reviewRes2.ok) {
-        return res.status(reviewRes2.status).json({
-          error: `리뷰 조회 실패 (${reviewRes2.status}): ${rawText2.slice(0, 200)}`,
-          debug: { status1: reviewRes.status, status2: reviewRes2.status }
+      const data = JSON.parse(text);
+      if (r.ok && (data.items || data.reviews || data.list || data.contents)) {
+        return res.status(200).json({
+          reviews: normalizeReviews(data),
+          source: url,
         });
       }
-
-      const data2 = JSON.parse(rawText2);
-      return res.status(200).json({ reviews: normalizeReviews(data2), source: "smartplace" });
+      lastError = `${url} → ${r.status}: ${text.slice(0, 100)}`;
+    } catch (e) {
+      lastError = `${url} → ${e.message}`;
     }
-
-    const data = JSON.parse(rawText);
-    return res.status(200).json({ reviews: normalizeReviews(data), source: "place-api" });
-
-  } catch (e) {
-    return res.status(500).json({ error: e.message });
   }
+
+  // 모든 엔드포인트 실패 시 상세 오류 반환
+  return res.status(500).json({
+    error: "리뷰를 가져오지 못했습니다. 네이버 스마트플레이스 API 접근이 제한되어 있습니다.",
+    detail: lastError,
+    solution: "스마트플레이스 직접 세션 로그인 방식으로 전환이 필요합니다.",
+  });
 }
 
 function normalizeReviews(data) {
@@ -81,7 +74,7 @@ function normalizeReviews(data) {
     platform: "naver",
     author: r.writer?.nickname || r.writerInfo?.nickname || r.authorName || r.nickname || "익명",
     date: (r.createdAt || r.createDate || r.visitDate || "").slice(0, 10),
-    rating: r.starRating || r.rating || r.visitCount || 5,
+    rating: r.starRating || r.rating || 5,
     content: r.body || r.content || r.text || r.reviewText || "",
     tags: (r.keywords || r.tags || []).map(k => k.text || k.name || k),
     replied: !!(r.reply || r.ownerReply || r.replyContent),
