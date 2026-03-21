@@ -3,40 +3,27 @@ import cors from "cors";
 import puppeteer from "puppeteer-core";
 import { execSync } from "child_process";
 
-// 시스템 Chromium 경로 찾기
+// Chromium 경로 (환경변수 또는 고정 경로)
 function getChromiumPath() {
-  try {
-    // nixpacks로 설치된 chromium 경로
-    const result = execSync("which chromium 2>/dev/null || which chromium-browser 2>/dev/null || find /nix -name chromium -type f 2>/dev/null | head -1").toString().trim();
-    if (result) {
-      console.log("Found chromium at:", result);
-      return result;
-    }
-  } catch (e) {
-    console.log("which failed:", e.message);
+  const envPath = process.env.CHROMIUM_PATH;
+  if (envPath) {
+    console.log("Chromium from env:", envPath);
+    return envPath;
   }
-  // 알려진 경로들 시도
   const paths = [
     "/usr/bin/chromium",
     "/usr/bin/chromium-browser",
     "/usr/bin/google-chrome",
-    "/run/current-system/sw/bin/chromium",
+    "/usr/bin/google-chrome-stable",
   ];
   for (const p of paths) {
     try {
-      execSync(`ls ${p} 2>/dev/null`);
-      console.log("Found at:", p);
+      execSync(`test -f "${p}"`);
+      console.log("Chromium found at:", p);
       return p;
     } catch {}
   }
-  // nix store에서 찾기
-  try {
-    const nixResult = execSync("find /nix/store -name chromium -type f 2>/dev/null | grep '/bin/chromium$' | head -1").toString().trim();
-    if (nixResult) {
-      console.log("Found in nix store:", nixResult);
-      return nixResult;
-    }
-  } catch {}
+  console.log("Chromium not found!");
   return null;
 }
 
