@@ -5,20 +5,37 @@ import { execSync } from "child_process";
 
 // 시스템 Chromium 경로 찾기
 function getChromiumPath() {
+  try {
+    // nixpacks로 설치된 chromium 경로
+    const result = execSync("which chromium 2>/dev/null || which chromium-browser 2>/dev/null || find /nix -name chromium -type f 2>/dev/null | head -1").toString().trim();
+    if (result) {
+      console.log("Found chromium at:", result);
+      return result;
+    }
+  } catch (e) {
+    console.log("which failed:", e.message);
+  }
+  // 알려진 경로들 시도
   const paths = [
-    "/run/current-system/sw/bin/chromium",
     "/usr/bin/chromium",
     "/usr/bin/chromium-browser",
-    "/nix/var/nix/profiles/default/bin/chromium",
+    "/usr/bin/google-chrome",
+    "/run/current-system/sw/bin/chromium",
   ];
   for (const p of paths) {
     try {
-      execSync(`test -f ${p}`);
+      execSync(`ls ${p} 2>/dev/null`);
+      console.log("Found at:", p);
       return p;
     } catch {}
   }
+  // nix store에서 찾기
   try {
-    return execSync("which chromium || which chromium-browser").toString().trim();
+    const nixResult = execSync("find /nix/store -name chromium -type f 2>/dev/null | grep '/bin/chromium$' | head -1").toString().trim();
+    if (nixResult) {
+      console.log("Found in nix store:", nixResult);
+      return nixResult;
+    }
   } catch {}
   return null;
 }
