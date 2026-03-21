@@ -1,7 +1,27 @@
 import express from "express";
 import cors from "cors";
 import puppeteer from "puppeteer-core";
-import chromium from "@sparticuz/chromium";
+import { execSync } from "child_process";
+
+// 시스템 Chromium 경로 찾기
+function getChromiumPath() {
+  const paths = [
+    "/run/current-system/sw/bin/chromium",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/nix/var/nix/profiles/default/bin/chromium",
+  ];
+  for (const p of paths) {
+    try {
+      execSync(`test -f ${p}`);
+      return p;
+    } catch {}
+  }
+  try {
+    return execSync("which chromium || which chromium-browser").toString().trim();
+  } catch {}
+  return null;
+}
 
 const app = express();
 app.use(cors());
@@ -21,20 +41,20 @@ async function getBrowser() {
     }
   }
   if (!browser) {
-    chromium.setHeadlessMode = true;
-    chromium.setGraphicsMode = false;
+    const executablePath = getChromiumPath();
+    console.log("Chromium path:", executablePath);
     browser = await puppeteer.launch({
       args: [
-        ...chromium.args,
         "--no-sandbox",
         "--disable-setuid-sandbox",
         "--disable-dev-shm-usage",
         "--disable-gpu",
         "--single-process",
         "--no-zygote",
+        "--disable-extensions",
       ],
       defaultViewport: { width: 1280, height: 800 },
-      executablePath: await chromium.executablePath(),
+      executablePath,
       headless: true,
     });
     console.log("Browser launched successfully");
