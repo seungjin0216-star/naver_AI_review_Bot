@@ -97,43 +97,54 @@ app.post("/reviews", auth, async (req, res) => {
       { name: "NID_SES", value: naverToken, domain: ".naver.com" }
     );
 
-    // 스마트플레이스 접속
-    await page.goto("https://smartplace.naver.com", {
-      waitUntil: "networkidle2",
-      timeout: 30000,
+    // 네이버 로그인 페이지로 이동하여 쿠키 세팅
+    await page.goto("https://naver.com", {
+      waitUntil: "domcontentloaded",
+      timeout: 15000,
     });
 
-    // 리뷰 API 호출
-    const result = await page.evaluate(async (bizId) => {
-      const endpoints = [
-        `https://smartplace.naver.com/businessticket/v1/businesses/${bizId}/reviews?page=1&size=30&sorted=RECENTLY`,
-        `https://smartplace.naver.com/v1/businesses/${bizId}/reviews?page=1&size=30`,
-      ];
-      for (const url of endpoints) {
+    // 스마트플레이스 리뷰 페이지로 이동 + 네트워크 요청 가로채기
+    let capturedReviews = null;
+    let capturedUrl = null;
+
+    page.on("response", async (response) => {
+      const url = response.url();
+      if (
+        url.includes("review") &&
+        url.includes(businessId) &&
+        !url.includes(".css") &&
+        !url.includes(".js")
+      ) {
         try {
-          const r = await fetch(url, {
-            credentials: "include",
-            headers: { Accept: "application/json" },
-          });
-          const text = await r.text();
-          if (!text.trim().startsWith("<") && r.ok) {
-            return { ok: true, data: JSON.parse(text), url };
+          const text = await response.text();
+          if (!text.startsWith("<") && text.includes("{")) {
+            const data = JSON.parse(text);
+            const items = data.items || data.reviews || data.list || data.contents;
+            if (items && items.length > 0) {
+              capturedReviews = items;
+              capturedUrl = url;
+              console.log("Captured reviews from:", url);
+            }
           }
-        } catch (e) {
-          continue;
-        }
+        } catch {}
       }
-      return { ok: false, error: "모든 엔드포인트 실패" };
-    }, businessId);
+    });
+
+    await page.goto(
+      `https://smartplace.naver.com/places/${businessId}/reviews`,
+      { waitUntil: "networkidle2", timeout: 30000 }
+    );
+
+    // 잠시 대기
+    await new Promise(r => setTimeout(r, 3000));
 
     await page.close();
 
-    if (!result.ok) {
-      return res.status(500).json({ error: result.error });
+    if (!capturedReviews) {
+      return res.status(500).json({ error: "리뷰를 찾지 못했습니다. 로그인 상태를 확인해주세요." });
     }
 
-    const items = result.data.items || result.data.reviews || result.data.list || [];
-    const reviews = items.map((r) => ({
+    const reviews = capturedReviews.map((r) => ({
       id: String(r.id || r.reviewId || Math.random()),
       platform: "naver",
       author: r.writer?.nickname || r.authorName || "익명",
@@ -146,7 +157,7 @@ app.post("/reviews", auth, async (req, res) => {
       images: (r.photos?.length || 0) > 0,
     }));
 
-    res.json({ reviews, source: result.url });
+    res.json({ reviews, source: capturedUrl });
 
   } catch (e) {
     if (page) await page.close().catch(() => {});
