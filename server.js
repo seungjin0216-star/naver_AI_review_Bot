@@ -159,13 +159,68 @@ app.post("/reviews", auth, async (req, res) => {
       }
     });
 
-    console.log("Navigating to smartplace reviews...");
-    await page.goto(
+    // 여러 URL 시도
+    const reviewUrls = [
       `https://smartplace.naver.com/places/${businessId}/reviews`,
-      { waitUntil: "networkidle2", timeout: 30000 }
-    );
+      `https://smartplace.naver.com/business/${businessId}/review`,
+      `https://smartplace.naver.com/${businessId}/review`,
+    ];
 
-    await new Promise(r => setTimeout(r, 4000));
+    for (const url of reviewUrls) {
+      if (capturedReviews) break;
+      console.log("Navigating to:", url);
+      try {
+        await page.goto(url, { waitUntil: "networkidle2", timeout: 20000 });
+        await new Promise(r => setTimeout(r, 3000));
+      } catch (e) {
+        console.log("Nav error:", e.message);
+      }
+    }
+
+    // 추가로 스마트플레이스 관리자 리뷰 페이지도 시도
+    if (!capturedReviews) {
+      console.log("Trying admin review page...");
+      try {
+        await page.goto(
+          `https://smartplace.naver.com/home`,
+          { waitUntil: "networkidle2", timeout: 20000 }
+        );
+        await new Promise(r => setTimeout(r, 2000));
+        // 관리자 페이지에서 직접 API 호출
+        const apiResult = await page.evaluate(async (bizId) => {
+          const endpoints = [
+            `https://smartplace.naver.com/businessticket/v1/businesses/${bizId}/reviews?page=1&size=20&sorted=RECENTLY`,
+            `https://smartplace.naver.com/v1/businesses/${bizId}/reviews?page=1&size=20`,
+            `https://smartplace.naver.com/api/v1/businesses/${bizId}/reviews?page=1&size=20`,
+          ];
+          for (const url of endpoints) {
+            try {
+              const r = await fetch(url, {
+                credentials: "include",
+                headers: { Accept: "application/json" },
+              });
+              const text = await r.text();
+              console.log("API try:", url, r.status, text.slice(0, 100));
+              if (!text.trim().startsWith("<") && r.ok) {
+                const data = JSON.parse(text);
+                const items = data.items || data.reviews || data.list || data.contents;
+                if (items && items.length > 0) return { ok: true, items, url };
+              }
+            } catch (e) { continue; }
+          }
+          return { ok: false };
+        }, businessId);
+
+        if (apiResult.ok) {
+          capturedReviews = apiResult.items;
+          capturedUrl = apiResult.url;
+          console.log("✅ Got reviews via admin API! count:", capturedReviews.length);
+        }
+      } catch (e) {
+        console.log("Admin page error:", e.message);
+      }
+    }
+
     await page.close();
 
     if (!capturedReviews) {
