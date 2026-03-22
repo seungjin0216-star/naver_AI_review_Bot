@@ -107,8 +107,17 @@ app.post("/login", auth, async (req, res) => {
 // 리뷰 가져오기 (실제 세션 쿠키 사용)
 // ─────────────────────────────────────────
 app.post("/reviews", auth, async (req, res) => {
-  const { nidAut, nidSes, businessId } = req.body;
-  if (!nidAut || !nidSes || !businessId) return res.status(400).json({ error: "nidAut, nidSes, businessId required" });
+  const { cookieStr, businessId } = req.body;
+  if (!cookieStr || !businessId) return res.status(400).json({ error: "cookieStr, businessId required" });
+
+  // 쿠키 파싱
+  const parseCookie = (str, name) => {
+    const match = str.match(new RegExp(`(?:^|;\s*)${name}=([^;]*)`));
+    return match ? match[1] : null;
+  };
+  const nidAut = parseCookie(cookieStr, "NID_AUT");
+  const nidSes = parseCookie(cookieStr, "NID_SES");
+  if (!nidAut || !nidSes) return res.status(400).json({ error: "NID_AUT 또는 NID_SES가 없습니다" });
 
   let page = null;
   try {
@@ -116,11 +125,19 @@ app.post("/reviews", auth, async (req, res) => {
     page = await b.newPage();
     await page.setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
 
-    // 실제 네이버 세션 쿠키 세팅
-    await page.setCookie(
-      { name: "NID_AUT", value: nidAut, domain: ".naver.com", path: "/" },
-      { name: "NID_SES", value: nidSes, domain: ".naver.com", path: "/" }
-    );
+    // 전체 쿠키 문자열 파싱해서 세팅
+    const cookiePairs = cookieStr.split(";").map(c => c.trim()).filter(Boolean);
+    const cookiesToSet = cookiePairs.map(pair => {
+      const idx = pair.indexOf("=");
+      return {
+        name: pair.slice(0, idx).trim(),
+        value: pair.slice(idx + 1).trim(),
+        domain: ".naver.com",
+        path: "/",
+      };
+    }).filter(c => c.name && c.value);
+
+    if (cookiesToSet.length > 0) await page.setCookie(...cookiesToSet);
 
     // 네트워크 요청 가로채기
     let capturedReviews = null;
@@ -182,8 +199,8 @@ app.post("/reviews", auth, async (req, res) => {
 // 답글 등록
 // ─────────────────────────────────────────
 app.post("/reply", auth, async (req, res) => {
-  const { nidAut, nidSes, businessId, reviewId, replyContent } = req.body;
-  if (!nidAut || !nidSes || !businessId || !reviewId || !replyContent) {
+  const { cookieStr, businessId, reviewId, replyContent } = req.body;
+  if (!cookieStr || !businessId || !reviewId || !replyContent) {
     return res.status(400).json({ error: "Missing required fields" });
   }
 
@@ -193,10 +210,12 @@ app.post("/reply", auth, async (req, res) => {
     page = await b.newPage();
     await page.setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36");
 
-    await page.setCookie(
-      { name: "NID_AUT", value: nidAut, domain: ".naver.com", path: "/" },
-      { name: "NID_SES", value: nidSes, domain: ".naver.com", path: "/" }
-    );
+    const cookiePairs = cookieStr.split(";").map(c => c.trim()).filter(Boolean);
+    const cookiesToSet = cookiePairs.map(pair => {
+      const idx = pair.indexOf("=");
+      return { name: pair.slice(0, idx).trim(), value: pair.slice(idx + 1).trim(), domain: ".naver.com", path: "/" };
+    }).filter(c => c.name && c.value);
+    if (cookiesToSet.length > 0) await page.setCookie(...cookiesToSet);
 
     await page.goto("https://smartplace.naver.com", { waitUntil: "networkidle2", timeout: 30000 });
 
