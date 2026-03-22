@@ -15,8 +15,7 @@ let browser = null;
 function getChromiumPath() {
   const envPath = process.env.CHROMIUM_PATH;
   if (envPath) return envPath;
-  const paths = ["/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/google-chrome"];
-  for (const p of paths) {
+  for (const p of ["/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/google-chrome"]) {
     try { execSync(`test -f "${p}"`); return p; } catch {}
   }
   return null;
@@ -27,7 +26,8 @@ async function getBrowser() {
     try { await browser.pages(); return browser; } catch { browser = null; }
   }
   browser = await puppeteer.launch({
-    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--single-process", "--no-zygote"],
+    args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage",
+           "--disable-gpu", "--single-process", "--no-zygote"],
     defaultViewport: { width: 1280, height: 800 },
     executablePath: getChromiumPath(),
     headless: true,
@@ -41,44 +41,58 @@ function auth(req, res, next) {
   next();
 }
 
-app.get("/", (req, res) => res.json({ status: "ok" }));
+app.get("/", (req, res) => res.json({ status: "ok", message: "Naver Review Server 🚀" }));
 
 // ─────────────────────────────────────────
-// 네이버 로그인 → 세션 쿠키 반환
+// 스마트플레이스 로그인 → 세션 쿠키 반환
 // ─────────────────────────────────────────
 app.post("/login", auth, async (req, res) => {
   const { username, password } = req.body;
-  if (!username || !password) return res.status(400).json({ error: "username and password required" });
+  if (!username || !password) return res.status(400).json({ error: "username, password 필요" });
 
   let page = null;
   try {
     const b = await getBrowser();
     page = await b.newPage();
-    await page.setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+    await page.setUserAgent("Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148");
 
-    // 네이버 로그인 페이지
-    await page.goto("https://nid.naver.com/nidlogin.login", { waitUntil: "networkidle2", timeout: 30000 });
+    // 스마트플레이스 전용 로그인 URL
+    await page.goto(
+      "https://nid.naver.com/nidlogin.login?mode=form&url=https://smartplace.naver.com/",
+      { waitUntil: "networkidle2", timeout: 30000 }
+    );
 
-    // 아이디/비번 입력 (키보드 타이핑 방식 - 봇 탐지 우회)
+    console.log("Login page loaded:", page.url());
+
+    // 아이디 입력
+    await page.waitForSelector("#id", { timeout: 10000 });
     await page.click("#id");
-    await page.keyboard.type(username, { delay: 80 });
-    await page.click("#pw");
-    await page.keyboard.type(password, { delay: 80 });
+    await new Promise(r => setTimeout(r, 500));
+    await page.keyboard.type(username, { delay: 100 });
 
-    // 로그인 버튼 클릭
+    // 비번 입력
+    await page.click("#pw");
+    await new Promise(r => setTimeout(r, 500));
+    await page.keyboard.type(password, { delay: 100 });
+
+    // 로그인 버튼
     await Promise.all([
-      page.waitForNavigation({ waitUntil: "networkidle2", timeout: 15000 }).catch(() => {}),
+      page.waitForNavigation({ waitUntil: "networkidle2", timeout: 20000 }).catch(() => {}),
       page.click(".btn_login"),
     ]);
 
-    // 현재 URL 확인
-    const currentUrl = page.url();
-    console.log("After login URL:", currentUrl);
+    const afterUrl = page.url();
+    console.log("After login URL:", afterUrl);
 
-    // 캡차 또는 추가 인증 체크
-    if (currentUrl.includes("captcha") || currentUrl.includes("login")) {
+    // 캡차 체크
+    if (afterUrl.includes("captcha") || afterUrl.includes("nidlogin")) {
+      const pageContent = await page.content();
+      const hasCaptcha = pageContent.includes("captcha") || pageContent.includes("자동입력 방지");
       await page.close();
-      return res.status(400).json({ error: "로그인 실패: 캡차 또는 추가 인증이 필요합니다. 네이버 앱에서 먼저 로그인해주세요." });
+      if (hasCaptcha) {
+        return res.status(400).json({ error: "캡차가 감지됐습니다. 잠시 후 다시 시도해주세요." });
+      }
+      return res.status(400).json({ error: "로그인 실패. 아이디/비밀번호를 확인해주세요." });
     }
 
     // 쿠키 획득
@@ -89,10 +103,10 @@ app.post("/login", auth, async (req, res) => {
     await page.close();
 
     if (!nidAut || !nidSes) {
-      return res.status(400).json({ error: "로그인 실패: 네이버 계정 정보를 확인해주세요." });
+      return res.status(400).json({ error: "로그인은 됐지만 세션 쿠키를 찾지 못했습니다." });
     }
 
-    console.log("Login successful, cookies obtained");
+    console.log("✅ Login success! NID_AUT:", nidAut.slice(0, 10) + "...");
     res.json({ success: true, nidAut, nidSes });
 
   } catch (e) {
@@ -104,73 +118,58 @@ app.post("/login", auth, async (req, res) => {
 });
 
 // ─────────────────────────────────────────
-// 리뷰 가져오기 (실제 세션 쿠키 사용)
+// 리뷰 가져오기
 // ─────────────────────────────────────────
 app.post("/reviews", auth, async (req, res) => {
-  const { cookieStr, businessId } = req.body;
-  if (!cookieStr || !businessId) return res.status(400).json({ error: "cookieStr, businessId required" });
-
-  // 쿠키 파싱
-  const parseCookie = (str, name) => {
-    const match = str.match(new RegExp(`(?:^|;\s*)${name}=([^;]*)`));
-    return match ? match[1] : null;
-  };
-  const nidAut = parseCookie(cookieStr, "NID_AUT");
-  const nidSes = parseCookie(cookieStr, "NID_SES");
-  if (!nidAut || !nidSes) return res.status(400).json({ error: "NID_AUT 또는 NID_SES가 없습니다" });
+  const { nidAut, nidSes, businessId } = req.body;
+  if (!nidAut || !nidSes || !businessId) return res.status(400).json({ error: "nidAut, nidSes, businessId 필요" });
 
   let page = null;
   try {
     const b = await getBrowser();
     page = await b.newPage();
-    await page.setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+    await page.setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36");
 
-    // 전체 쿠키 문자열 파싱해서 세팅
-    const cookiePairs = cookieStr.split(";").map(c => c.trim()).filter(Boolean);
-    const cookiesToSet = cookiePairs.map(pair => {
-      const idx = pair.indexOf("=");
-      return {
-        name: pair.slice(0, idx).trim(),
-        value: pair.slice(idx + 1).trim(),
-        domain: ".naver.com",
-        path: "/",
-      };
-    }).filter(c => c.name && c.value);
+    await page.setCookie(
+      { name: "NID_AUT", value: nidAut, domain: ".naver.com", path: "/" },
+      { name: "NID_SES", value: nidSes, domain: ".naver.com", path: "/" }
+    );
 
-    if (cookiesToSet.length > 0) await page.setCookie(...cookiesToSet);
-
-    // 네트워크 요청 가로채기
     let capturedReviews = null;
     let capturedUrl = null;
 
     page.on("response", async (response) => {
       const url = response.url();
-      if (url.includes("review") && (url.includes(businessId) || url.includes("place")) && !url.endsWith(".js") && !url.endsWith(".css")) {
+      if (
+        (url.includes("review") || url.includes("Review")) &&
+        !url.endsWith(".js") && !url.endsWith(".css") && !url.endsWith(".png")
+      ) {
         try {
           const text = await response.text();
           if (!text.trim().startsWith("<") && text.includes("{")) {
             const data = JSON.parse(text);
             const items = data.items || data.reviews || data.list || data.contents || data.result?.reviews;
-            if (items && items.length > 0 && !capturedReviews) {
+            if (items && Array.isArray(items) && items.length > 0 && !capturedReviews) {
               capturedReviews = items;
               capturedUrl = url;
-              console.log("✅ Captured reviews from:", url, "count:", items.length);
+              console.log("✅ Reviews captured from:", url, "count:", items.length);
             }
           }
         } catch {}
       }
     });
 
-    await page.goto(`https://smartplace.naver.com/places/${businessId}/reviews`, {
-      waitUntil: "networkidle2",
-      timeout: 30000,
-    });
+    console.log("Navigating to smartplace reviews...");
+    await page.goto(
+      `https://smartplace.naver.com/places/${businessId}/reviews`,
+      { waitUntil: "networkidle2", timeout: 30000 }
+    );
 
-    await new Promise(r => setTimeout(r, 3000));
+    await new Promise(r => setTimeout(r, 4000));
     await page.close();
 
     if (!capturedReviews) {
-      return res.status(500).json({ error: "리뷰를 찾지 못했습니다. 로그인 세션이 만료됐을 수 있습니다." });
+      return res.status(500).json({ error: "리뷰를 찾지 못했습니다. 로그인 세션을 다시 확인해주세요." });
     }
 
     const reviews = capturedReviews.map(r => ({
@@ -199,9 +198,9 @@ app.post("/reviews", auth, async (req, res) => {
 // 답글 등록
 // ─────────────────────────────────────────
 app.post("/reply", auth, async (req, res) => {
-  const { cookieStr, businessId, reviewId, replyContent } = req.body;
-  if (!cookieStr || !businessId || !reviewId || !replyContent) {
-    return res.status(400).json({ error: "Missing required fields" });
+  const { nidAut, nidSes, businessId, reviewId, replyContent } = req.body;
+  if (!nidAut || !nidSes || !businessId || !reviewId || !replyContent) {
+    return res.status(400).json({ error: "필수 값 누락" });
   }
 
   let page = null;
@@ -210,12 +209,10 @@ app.post("/reply", auth, async (req, res) => {
     page = await b.newPage();
     await page.setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36");
 
-    const cookiePairs = cookieStr.split(";").map(c => c.trim()).filter(Boolean);
-    const cookiesToSet = cookiePairs.map(pair => {
-      const idx = pair.indexOf("=");
-      return { name: pair.slice(0, idx).trim(), value: pair.slice(idx + 1).trim(), domain: ".naver.com", path: "/" };
-    }).filter(c => c.name && c.value);
-    if (cookiesToSet.length > 0) await page.setCookie(...cookiesToSet);
+    await page.setCookie(
+      { name: "NID_AUT", value: nidAut, domain: ".naver.com", path: "/" },
+      { name: "NID_SES", value: nidSes, domain: ".naver.com", path: "/" }
+    );
 
     await page.goto("https://smartplace.naver.com", { waitUntil: "networkidle2", timeout: 30000 });
 
