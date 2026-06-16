@@ -250,7 +250,7 @@ app.post("/reviews", auth, async (req, res) => {
 });
 
 // ─────────────────────────────────────────
-// 답글 등록
+// 답글 등록 (API 우선 → 실패 시 UI 자동화)
 // ─────────────────────────────────────────
 app.post("/reply", auth, async (req, res) => {
   const { nidAut, nidSes, businessId, reviewId, replyContent } = req.body;
@@ -262,21 +262,23 @@ app.post("/reply", auth, async (req, res) => {
   try {
     const b = await getBrowser();
     page = await b.newPage();
-    await page.setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36");
+    await page.setUserAgent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36");
 
     await page.setCookie(
       { name: "NID_AUT", value: nidAut, domain: ".naver.com", path: "/" },
       { name: "NID_SES", value: nidSes, domain: ".naver.com", path: "/" }
     );
 
+    // ── 1단계: 기존 API 직접 호출 시도 ──
     await page.goto("https://smartplace.naver.com", { waitUntil: "networkidle2", timeout: 30000 });
 
-    const result = await page.evaluate(async (bizId, revId, content) => {
-      const urls = [
+    const apiResult = await page.evaluate(async (bizId, revId, content) => {
+      const endpoints = [
         `https://smartplace.naver.com/businessticket/v1/businesses/${bizId}/reviews/${revId}/reply`,
         `https://smartplace.naver.com/v1/businesses/${bizId}/reviews/${revId}/reply`,
+        `https://smartplace.naver.com/api/v1/businesses/${bizId}/reviews/${revId}/reply`,
       ];
-      for (const url of urls) {
+      for (const url of endpoints) {
         try {
           const r = await fetch(url, {
             method: "POST",
@@ -284,21 +286,132 @@ app.post("/reply", auth, async (req, res) => {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ content }),
           });
-          if (r.ok) return { ok: true };
+          if (r.ok) return { ok: true, url };
           const text = await r.text();
-          if (!text.startsWith("<")) return { ok: false, error: `${r.status}: ${text.slice(0, 200)}` };
+          console.log(`[API] ${url} → ${r.status}: ${text.slice(0, 100)}`);
         } catch (e) { continue; }
       }
-      return { ok: false, error: "답글 등록 실패" };
+      return { ok: false };
     }, businessId, reviewId, replyContent);
 
+    if (apiResult.ok) {
+      console.log("✅ 답글 API 성공:", apiResult.url);
+      await page.close();
+      return res.json({ success: true, method: "api" });
+    }
+
+    // ── 2단계: UI 자동화 (새 네이버 AI 초안 흐름) ──
+    console.log("API 실패 → UI 자동화 시작");
+
+    // 리뷰 관리 페이지로 이동
+    const reviewPageUrls = [
+      `https://smartplace.naver.com/places/${businessId}/reviews`,
+      `https://smartplace.naver.com/business-home/${businessId}/reviews`,
+      `https://smartplace.naver.com/${businessId}/reviews`,
+    ];
+    for (const url of reviewPageUrls) {
+      try {
+        await page.goto(url, { waitUntil: "networkidle2", timeout: 20000 });
+        const found = await page.evaluate(() => !!document.querySelector("[class*='review']"));
+        if (found) { console.log("✅ 리뷰 페이지:", url); break; }
+      } catch {}
+    }
+    await new Promise(r => setTimeout(r, 2000));
+
+    // 해당 리뷰의 '답글 작성' 버튼 클릭
+    const replyWriteClicked = await page.evaluate((revId) => {
+      // reviewId 기반으로 리뷰 컨테이너 탐색
+      const containers = document.querySelectorAll("[data-review-id], [data-id]");
+      for (const el of containers) {
+        if (el.dataset.reviewId === revId || el.dataset.id === revId) {
+          const btn = el.querySelector("button");
+          if (btn) { btn.click(); return true; }
+        }
+      }
+      // fallback: 텍스트로 버튼 탐색
+      const allBtns = Array.from(document.querySelectorAll("button"));
+      const writeBtn = allBtns.find(b => b.textContent.trim().includes("답글 작성"));
+      if (writeBtn) { writeBtn.click(); return "fallback"; }
+      return false;
+    }, reviewId);
+    console.log("답글 작성 클릭:", replyWriteClicked);
+
+    // 네이버 AI 초안 패널 로딩 대기 (최대 8초)
+    await new Promise(r => setTimeout(r, 3000));
+    try {
+      await page.waitForFunction(
+        () => {
+          const btns = Array.from(document.querySelectorAll("button, [role='button']"));
+          return btns.some(b => b.textContent.includes("이 답글 수정") || b.textContent.includes("답글 수정"));
+        },
+        { timeout: 8000 }
+      );
+    } catch {
+      console.log("AI 초안 패널 미감지, 계속 진행...");
+    }
+
+    // '이 답글 수정' 버튼 클릭
+    const editClicked = await page.evaluate(() => {
+      const btns = Array.from(document.querySelectorAll("button, [role='button']"));
+      const editBtn = btns.find(b =>
+        b.textContent.includes("이 답글 수정") || b.textContent.includes("답글 수정")
+      );
+      if (!editBtn) return false;
+      editBtn.click();
+      return true;
+    });
+    console.log("이 답글 수정 클릭:", editClicked);
+
+    await new Promise(r => setTimeout(r, 1500));
+
+    // textarea 찾아서 내용 교체 (React 상태 업데이트 트리거 포함)
+    const textFilled = await page.evaluate((content) => {
+      const ta = document.querySelector("textarea");
+      if (!ta) return false;
+      // React/Vue controlled input 우회
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+      setter.call(ta, content);
+      ta.dispatchEvent(new Event("input", { bubbles: true }));
+      ta.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    }, replyContent);
+    console.log("텍스트 입력:", textFilled);
+
+    if (!textFilled) {
+      await page.close();
+      return res.status(500).json({ error: "텍스트 입력창을 찾지 못했습니다. 네이버 UI가 추가로 변경됐을 수 있습니다." });
+    }
+
+    await new Promise(r => setTimeout(r, 800));
+
+    // 등록/완료 버튼 클릭
+    const submitted = await page.evaluate(() => {
+      const btns = Array.from(document.querySelectorAll("button, [role='button']"));
+      const submitBtn = btns.find(b =>
+        b.textContent.trim() === "등록" ||
+        b.textContent.trim() === "완료" ||
+        b.textContent.trim() === "저장" ||
+        b.textContent.includes("답글 등록")
+      );
+      if (!submitBtn) return false;
+      submitBtn.click();
+      return true;
+    });
+    console.log("등록 클릭:", submitted);
+
+    await new Promise(r => setTimeout(r, 2000));
     await page.close();
-    if (!result.ok) return res.status(500).json({ error: result.error });
-    res.json({ success: true });
+
+    if (!submitted) {
+      return res.status(500).json({ error: "등록 버튼을 찾지 못했습니다." });
+    }
+
+    res.json({ success: true, method: "ui" });
 
   } catch (e) {
     if (page) await page.close().catch(() => {});
     browser = null;
+    console.error("Reply error:", e.message);
     res.status(500).json({ error: e.message });
   }
 });
