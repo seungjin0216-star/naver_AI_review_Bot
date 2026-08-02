@@ -24,8 +24,10 @@ async function launchBrowser() {
       "--disable-setuid-sandbox",
       "--disable-dev-shm-usage",
       "--disable-gpu",
+      "--window-size=1280,800",
     ],
-    headless: true,
+    headless: "new",
+    defaultViewport: { width: 1280, height: 800 },
   });
 }
 
@@ -50,9 +52,10 @@ async function naverLogin(browser) {
   await delay(300);
   await page.keyboard.type(NAVER_PW, { delay: 80 });
 
+  // 버튼 셀렉터 대신 Enter 키로 제출 (더 안정적)
   await Promise.all([
     page.waitForNavigation({ waitUntil: "networkidle2", timeout: 20000 }).catch(() => {}),
-    page.click(".btn_login"),
+    page.keyboard.press("Enter"),
   ]);
 
   const afterUrl = page.url();
