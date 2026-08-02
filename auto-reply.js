@@ -150,14 +150,21 @@ async function fetchUnrepliedReviews(browser, { nidAut, nidSes }, businessId, pl
   await page.close();
   if (!captured) return [];
 
+  // 구조 파악용 디버그 (첫 번째 아이템만)
+  if (captured.length > 0) {
+    console.log(`   [STRUCT] 첫 리뷰 키: ${JSON.stringify(Object.keys(captured[0]))}`);
+    console.log(`   [STRUCT] 샘플: ${JSON.stringify(captured[0]).slice(0, 500)}`);
+  }
+
   return captured
     .map((r) => ({
-      id:      String(r.id || r.reviewId || ""),
-      author:  r.writer?.nickname || r.authorName || "익명",
-      rating:  r.starRating || r.rating || 5,
-      content: r.body || r.content || r.text || "",
-      tags:    (r.keywords || r.tags || []).map((k) => k.text || k.name || k),
-      replied: !!(r.reply || r.ownerReply),
+      id:               String(r.id || r.reviewId || r.reviewNo || ""),
+      author:           r.author?.displayName || r.writer?.nickname || r.authorName || "익명",
+      rating:           r.rating || r.starRating || 5,
+      content:          r.content?.text || r.body || (typeof r.content === "string" ? r.content : "") || r.text || "",
+      tags:             (r.keywords || r.tags || r.content?.tags || []).map((k) => k.text || k.name || k),
+      replied:          !!(r.ownerReply || r.reply || r.replyContent),
+      bookingBusinessId: r.bookingDetail?.businessId || null,
     }))
     .filter((r) => !r.replied && r.id);
 }
@@ -225,7 +232,7 @@ async function generateReply(review, greeting, retryCount = 0) {
 }
 
 // ─── 답글 등록 ────────────────────────────────────────────────────────────────
-async function postReply(browser, { nidAut, nidSes }, businessId, reviewId, replyContent) {
+async function postReply(browser, { nidAut, nidSes }, businessId, placeId, reviewId, replyContent) {
   const page = await browser.newPage();
   await page.setUserAgent(
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
@@ -237,25 +244,57 @@ async function postReply(browser, { nidAut, nidSes }, businessId, reviewId, repl
 
   await page.goto("https://smartplace.naver.com", { waitUntil: "networkidle2", timeout: 30000 });
 
-  // API 직접 호출 시도
-  const apiResult = await page.evaluate(async (bizId, revId, content) => {
+  const apiResult = await page.evaluate(async (bizId, placeId, revId, content) => {
+    const logs = [];
+
+    // 1. GraphQL mutation 시도
+    const gqlMutations = [
+      { name: "CreateOwnerReply",   field: "createOwnerReply" },
+      { name: "WriteOwnerReply",    field: "writeOwnerReply" },
+      { name: "CreateReviewReply",  field: "createReviewReply" },
+      { name: "AddOwnerReply",      field: "addOwnerReply" },
+    ];
+    for (const { name, field } of gqlMutations) {
+      try {
+        const r = await fetch("https://smartplace.naver.com/graphql", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify({
+            operationName: name,
+            variables: { reviewId: revId, content, placeId },
+            query: `mutation ${name}($reviewId:ID!,$content:String!,$placeId:ID){${field}(reviewId:$reviewId,content:$content,placeId:$placeId){id content __typename}}`,
+          }),
+        });
+        const text = await r.text();
+        logs.push(`GQL ${name}: ${r.status} → ${text.slice(0, 80)}`);
+        if (r.ok && !text.includes('"errors"')) return { ok: true, method: `gql:${name}`, logs };
+      } catch (e) { logs.push(`GQL ${name} ERR: ${e.message}`); }
+    }
+
+    // 2. REST 엔드포인트 시도 (placeId 기반)
     for (const url of [
+      `https://smartplace.naver.com/businessticket/v1/businesses/${placeId}/reviews/${revId}/reply`,
+      `https://smartplace.naver.com/api/v1/businesses/${placeId}/reviews/${revId}/reply`,
       `https://smartplace.naver.com/businessticket/v1/businesses/${bizId}/reviews/${revId}/reply`,
-      `https://smartplace.naver.com/v1/businesses/${bizId}/reviews/${revId}/reply`,
-      `https://smartplace.naver.com/api/v1/businesses/${bizId}/reviews/${revId}/reply`,
     ]) {
       try {
         const r = await fetch(url, {
-          method: "POST",
-          credentials: "include",
+          method: "POST", credentials: "include",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ content }),
         });
-        if (r.ok) return { ok: true, method: "api", url };
-      } catch {}
+        const text = await r.text();
+        logs.push(`REST ${url.slice(40, 90)}: ${r.status} → ${text.slice(0, 60)}`);
+        if (r.ok) return { ok: true, method: "rest", logs };
+      } catch (e) { logs.push(`REST ERR: ${e.message}`); }
     }
-    return { ok: false };
-  }, businessId, reviewId, replyContent);
+
+    return { ok: false, logs };
+  }, businessId, placeId, reviewId, replyContent);
+
+  // 디버그 로그 출력
+  apiResult.logs?.forEach(l => console.log(`      [REPLY] ${l}`));
 
   await page.close();
   return apiResult.ok;
@@ -301,7 +340,7 @@ async function main() {
           const reply = await generateReply(review, branch.greeting);
           if (!reply) throw new Error("답글 생성 실패 (빈 응답)");
 
-          const posted = await postReply(browser, session, branch.businessId, review.id, reply);
+          const posted = await postReply(browser, session, branch.businessId, branch.placeId, review.id, reply);
           if (!posted) throw new Error("답글 등록 API 실패");
 
           console.log(`   ✅ [${review.author}] 완료`);
