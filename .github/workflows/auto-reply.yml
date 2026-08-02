@@ -1,0 +1,31 @@
+name: 네이버 리뷰 자동 답글
+
+on:
+  schedule:
+    - cron: "0 0 * * *"   # 매일 오전 09:00 KST (UTC 00:00)
+    - cron: "0 9 * * *"   # 매일 오후 18:00 KST (UTC 09:00)
+  workflow_dispatch:       # 수동 실행 가능
+
+jobs:
+  auto-reply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Node.js 설정
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: 의존성 설치
+        run: npm install
+
+      - name: 자동 답글 실행
+        env:
+          NAVER_ID: ${{ secrets.NAVER_ID }}
+          NAVER_PW: ${{ secrets.NAVER_PW }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: node auto-reply.js
