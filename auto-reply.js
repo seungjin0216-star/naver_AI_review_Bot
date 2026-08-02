@@ -1,7 +1,7 @@
 /**
  * 네이버 리뷰 자동 답글 스크립트
  * GitHub Actions에서 매일 9시/18시 실행
- * 환경변수: NAVER_ID, NAVER_PW, GEMINI_API_KEY
+ * 환경변수: NAVER_NID_AUT, NAVER_NID_SES, GEMINI_API_KEY
  */
 import puppeteer from "puppeteer";
 
@@ -10,8 +10,8 @@ const BRANCHES = [
   { name: "마곡발산점", businessId: "11542564", greeting: "장수한우곱창 마곡발산점" },
 ];
 
-const NAVER_ID      = process.env.NAVER_ID;
-const NAVER_PW      = process.env.NAVER_PW;
+const NID_AUT        = process.env.NAVER_NID_AUT;
+const NID_SES        = process.env.NAVER_NID_SES;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -31,47 +31,11 @@ async function launchBrowser() {
   });
 }
 
-// ─── 네이버 로그인 ────────────────────────────────────────────────────────────
-async function naverLogin(browser) {
-  const page = await browser.newPage();
-  await page.setUserAgent(
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"
-  );
-
-  await page.goto(
-    "https://nid.naver.com/nidlogin.login?mode=form&url=https://smartplace.naver.com/",
-    { waitUntil: "networkidle2", timeout: 30000 }
-  );
-
-  await page.waitForSelector("#id", { timeout: 10000 });
-  await page.click("#id");
-  await delay(300);
-  await page.keyboard.type(NAVER_ID, { delay: 80 });
-
-  await page.click("#pw");
-  await delay(300);
-  await page.keyboard.type(NAVER_PW, { delay: 80 });
-
-  // 버튼 셀렉터 대신 Enter 키로 제출 (더 안정적)
-  await Promise.all([
-    page.waitForNavigation({ waitUntil: "networkidle2", timeout: 20000 }).catch(() => {}),
-    page.keyboard.press("Enter"),
-  ]);
-
-  const afterUrl = page.url();
-  if (afterUrl.includes("captcha") || afterUrl.includes("nidlogin")) {
-    await page.close();
-    throw new Error("캡차 감지 또는 로그인 실패. 아이디/비밀번호를 확인하세요.");
-  }
-
-  const cookies = await page.cookies();
-  const nidAut  = cookies.find((c) => c.name === "NID_AUT")?.value;
-  const nidSes  = cookies.find((c) => c.name === "NID_SES")?.value;
-  await page.close();
-
-  if (!nidAut || !nidSes) throw new Error("세션 쿠키 획득 실패");
-  console.log("✅ 네이버 로그인 성공");
-  return { nidAut, nidSes };
+// ─── 네이버 쿠키 세션 (로그인 없이 직접 주입) ────────────────────────────────
+function getSession() {
+  if (!NID_AUT || !NID_SES) throw new Error("NAVER_NID_AUT, NAVER_NID_SES 환경변수가 없습니다.");
+  console.log("✅ 네이버 쿠키 세션 사용");
+  return { nidAut: NID_AUT, nidSes: NID_SES };
 }
 
 // ─── 미답글 리뷰 수집 ─────────────────────────────────────────────────────────
@@ -258,8 +222,8 @@ async function postReply(browser, { nidAut, nidSes }, businessId, reviewId, repl
 
 // ─── 메인 ─────────────────────────────────────────────────────────────────────
 async function main() {
-  if (!NAVER_ID || !NAVER_PW || !GEMINI_API_KEY) {
-    console.error("❌ 환경변수 누락: NAVER_ID, NAVER_PW, GEMINI_API_KEY 를 설정하세요.");
+  if (!NID_AUT || !NID_SES || !GEMINI_API_KEY) {
+    console.error("❌ 환경변수 누락: NAVER_NID_AUT, NAVER_NID_SES, GEMINI_API_KEY 를 설정하세요.");
     process.exit(1);
   }
 
@@ -270,7 +234,7 @@ async function main() {
   const browser = await launchBrowser();
 
   try {
-    const session = await naverLogin(browser);
+    const session = getSession();
 
     for (const branch of BRANCHES) {
       console.log(`\n📍 [${branch.name}] 처리 중...`);
