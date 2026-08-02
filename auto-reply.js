@@ -162,8 +162,8 @@ async function fetchUnrepliedReviews(browser, { nidAut, nidSes }, businessId, pl
       author:           r.author?.displayName || r.writer?.nickname || r.authorName || "익명",
       rating:           r.rating || r.starRating || 5,
       content:          r.content?.text || r.body || (typeof r.content === "string" ? r.content : "") || r.text || "",
-      tags:             (r.keywords || r.tags || r.content?.tags || []).map((k) => k.text || k.name || k),
-      replied:          !!(r.ownerReply || r.reply || r.replyContent),
+      tags:             (Array.isArray(r.keywords) ? r.keywords : Array.isArray(r.tags) ? r.tags : Array.isArray(r.content?.tags) ? r.content.tags : []).map((k) => k.text || k.name || k),
+      replied:          !!(r.hasReply || r.reply),
       bookingBusinessId: r.bookingDetail?.businessId || null,
     }))
     .filter((r) => !r.replied && r.id);
