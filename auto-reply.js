@@ -52,22 +52,57 @@ async function fetchUnrepliedReviews(browser, { nidAut, nidSes }, businessId, pl
   let captured = null;
 
   page.on("response", async (response) => {
+    if (captured) return;
     const url = response.url();
-    if ((url.includes("review") || url.includes("Review")) &&
-        !url.endsWith(".js") && !url.endsWith(".css") && !url.endsWith(".png")) {
-      try {
-        const text = await response.text();
-        console.log(`   [NET] ${response.status()} ${url.slice(0, 80)}`);
-        if (!text.trim().startsWith("<") && text.includes("{")) {
-          const data = JSON.parse(text);
-          const items = data.items || data.reviews || data.list || data.contents || data.result?.reviews;
-          if (items && Array.isArray(items) && items.length > 0 && !captured) {
-            captured = items;
-            console.log(`   ✅ 네트워크 캡처: 리뷰 ${items.length}개`);
+    const hasReviewKeyword = url.includes("review") || url.includes("Review") || url.includes("graphql");
+    if (!hasReviewKeyword || url.endsWith(".js") || url.endsWith(".css") || url.endsWith(".png")) return;
+
+    try {
+      const text = await response.text();
+      if (text.trim().startsWith("<") || !text.includes("{")) return;
+
+      const data = JSON.parse(text);
+
+      // GraphQL 응답 구조 처리
+      let items = null;
+      if (data.data) {
+        // data.data 아래 모든 키 탐색
+        for (const key of Object.keys(data.data)) {
+          const val = data.data[key];
+          if (!val || typeof val !== "object") continue;
+          const found = val.items || val.reviews || val.list || val.contents || val.result;
+          if (Array.isArray(found) && found.length > 0) {
+            items = found;
+            console.log(`   [GQL] ${key} → ${items.length}개`);
+            break;
           }
+          // 한 단계 더 깊이
+          for (const subKey of Object.keys(val)) {
+            const sub = val[subKey];
+            if (Array.isArray(sub) && sub.length > 0 && sub[0]?.id) {
+              items = sub;
+              console.log(`   [GQL] ${key}.${subKey} → ${items.length}개`);
+              break;
+            }
+          }
+          if (items) break;
         }
-      } catch {}
-    }
+        // 구조 디버깅
+        if (!items && url.includes("getReviews")) {
+          console.log(`   [DEBUG] getReviews 구조: ${text.slice(0, 300)}`);
+        }
+      }
+
+      // REST 응답 구조 fallback
+      if (!items) {
+        items = data.items || data.reviews || data.list || data.contents || data.result?.reviews;
+      }
+
+      if (items && Array.isArray(items) && items.length > 0) {
+        captured = items;
+        console.log(`   ✅ 리뷰 캡처: ${items.length}개 (${url.slice(0, 60)})`);
+      }
+    } catch {}
   });
 
   for (const url of [
