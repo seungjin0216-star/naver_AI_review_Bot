@@ -6,8 +6,8 @@
 import puppeteer from "puppeteer";
 
 const BRANCHES = [
-  { name: "백석직영점", businessId: "8250200",  greeting: "장수한우곱창 백석직영점" },
-  { name: "마곡발산점", businessId: "11542564", greeting: "장수한우곱창 마곡발산점" },
+  { name: "백석직영점", businessId: "8250200",  placeId: "1757412660",  greeting: "장수한우곱창 백석직영점" },
+  { name: "마곡발산점", businessId: "11542564", placeId: "2073101570",  greeting: "장수한우곱창 마곡발산점" },
 ];
 
 const NID_AUT        = process.env.NAVER_NID_AUT;
@@ -39,7 +39,7 @@ function getSession() {
 }
 
 // ─── 미답글 리뷰 수집 ─────────────────────────────────────────────────────────
-async function fetchUnrepliedReviews(browser, { nidAut, nidSes }, businessId) {
+async function fetchUnrepliedReviews(browser, { nidAut, nidSes }, businessId, placeId) {
   const page = await browser.newPage();
   await page.setUserAgent(
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
@@ -71,6 +71,7 @@ async function fetchUnrepliedReviews(browser, { nidAut, nidSes }, businessId) {
   });
 
   for (const url of [
+    `https://smartplace.naver.com/bizes/place/${businessId}/reviews`,
     `https://smartplace.naver.com/places/${businessId}/reviews`,
     `https://smartplace.naver.com/business/${businessId}/review`,
   ]) {
@@ -79,8 +80,9 @@ async function fetchUnrepliedReviews(browser, { nidAut, nidSes }, businessId) {
       console.log(`   이동 중: ${url}`);
       await page.goto(url, { waitUntil: "networkidle2", timeout: 20000 });
       const finalUrl = page.url();
-      console.log(`   현재 URL: ${finalUrl}`);
-      await delay(3000);
+      const title = await page.title();
+      console.log(`   현재 URL: ${finalUrl} / 타이틀: ${title}`);
+      await delay(4000);
     } catch (e) {
       console.log(`   이동 실패: ${e.message}`);
     }
@@ -256,7 +258,7 @@ async function main() {
 
       let reviews;
       try {
-        reviews = await fetchUnrepliedReviews(browser, session, branch.businessId);
+        reviews = await fetchUnrepliedReviews(browser, session, branch.businessId, branch.placeId);
       } catch (e) {
         console.error(`   리뷰 수집 실패: ${e.message}`);
         report.skipped++;
