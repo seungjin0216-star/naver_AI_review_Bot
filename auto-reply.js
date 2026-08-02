@@ -57,12 +57,13 @@ async function fetchUnrepliedReviews(browser, { nidAut, nidSes }, businessId) {
         !url.endsWith(".js") && !url.endsWith(".css") && !url.endsWith(".png")) {
       try {
         const text = await response.text();
+        console.log(`   [NET] ${response.status()} ${url.slice(0, 80)}`);
         if (!text.trim().startsWith("<") && text.includes("{")) {
           const data = JSON.parse(text);
           const items = data.items || data.reviews || data.list || data.contents || data.result?.reviews;
           if (items && Array.isArray(items) && items.length > 0 && !captured) {
             captured = items;
-            console.log(`   네트워크 캡처: 리뷰 ${items.length}개 (${businessId})`);
+            console.log(`   ✅ 네트워크 캡처: 리뷰 ${items.length}개`);
           }
         }
       } catch {}
@@ -75,17 +76,24 @@ async function fetchUnrepliedReviews(browser, { nidAut, nidSes }, businessId) {
   ]) {
     if (captured) break;
     try {
+      console.log(`   이동 중: ${url}`);
       await page.goto(url, { waitUntil: "networkidle2", timeout: 20000 });
+      const finalUrl = page.url();
+      console.log(`   현재 URL: ${finalUrl}`);
       await delay(3000);
-    } catch {}
+    } catch (e) {
+      console.log(`   이동 실패: ${e.message}`);
+    }
   }
 
   // Admin API fallback
   if (!captured) {
+    console.log(`   API 직접 호출 시도...`);
     try {
       await page.goto("https://smartplace.naver.com/home", { waitUntil: "networkidle2", timeout: 20000 });
       await delay(2000);
       const result = await page.evaluate(async (bizId) => {
+        const log = [];
         for (const url of [
           `https://smartplace.naver.com/businessticket/v1/businesses/${bizId}/reviews?page=1&size=20&sorted=RECENTLY`,
           `https://smartplace.naver.com/v1/businesses/${bizId}/reviews?page=1&size=20`,
@@ -93,17 +101,24 @@ async function fetchUnrepliedReviews(browser, { nidAut, nidSes }, businessId) {
         ]) {
           try {
             const r = await fetch(url, { credentials: "include", headers: { Accept: "application/json" } });
+            const text = await r.text();
+            log.push(`${r.status} ${url.slice(0, 60)} → ${text.slice(0, 80)}`);
             if (r.ok) {
-              const data = await r.json();
+              const data = JSON.parse(text);
               const items = data.items || data.reviews || data.list || data.contents;
-              if (items?.length > 0) return { ok: true, items };
+              if (items?.length > 0) return { ok: true, items, log };
             }
-          } catch {}
+          } catch (e) {
+            log.push(`ERR ${url.slice(0, 60)} → ${e.message}`);
+          }
         }
-        return { ok: false };
+        return { ok: false, log };
       }, businessId);
+      result.log?.forEach(l => console.log(`   [API] ${l}`));
       if (result.ok) captured = result.items;
-    } catch {}
+    } catch (e) {
+      console.log(`   Admin 페이지 오류: ${e.message}`);
+    }
   }
 
   await page.close();
