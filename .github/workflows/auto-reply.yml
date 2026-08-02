@@ -25,7 +25,7 @@ jobs:
 
       - name: 자동 답글 실행
         env:
-          NAVER_ID: ${{ secrets.NAVER_ID }}
-          NAVER_PW: ${{ secrets.NAVER_PW }}
+          NAVER_NID_AUT: ${{ secrets.NAVER_NID_AUT }}
+          NAVER_NID_SES: ${{ secrets.NAVER_NID_SES }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: node auto-reply.js
