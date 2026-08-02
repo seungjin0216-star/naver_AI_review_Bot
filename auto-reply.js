@@ -54,53 +54,42 @@ async function fetchUnrepliedReviews(browser, { nidAut, nidSes }, businessId, pl
   page.on("response", async (response) => {
     if (captured) return;
     const url = response.url();
-    const hasReviewKeyword = url.includes("review") || url.includes("Review") || url.includes("graphql");
-    if (!hasReviewKeyword || url.endsWith(".js") || url.endsWith(".css") || url.endsWith(".png")) return;
+
+    // getReviews GraphQL만 타겟
+    const isReviewGql = url.includes("graphql") && url.includes("getReviews");
+    // REST fallback
+    const isReviewRest = !url.includes("graphql") && (url.includes("review") || url.includes("Review"))
+                         && !url.endsWith(".js") && !url.endsWith(".css");
+    if (!isReviewGql && !isReviewRest) return;
 
     try {
       const text = await response.text();
       if (text.trim().startsWith("<") || !text.includes("{")) return;
 
       const data = JSON.parse(text);
-
-      // GraphQL 응답 구조 처리
       let items = null;
-      if (data.data) {
-        // data.data 아래 모든 키 탐색
-        for (const key of Object.keys(data.data)) {
-          const val = data.data[key];
-          if (!val || typeof val !== "object") continue;
-          const found = val.items || val.reviews || val.list || val.contents || val.result;
-          if (Array.isArray(found) && found.length > 0) {
-            items = found;
-            console.log(`   [GQL] ${key} → ${items.length}개`);
-            break;
-          }
-          // 한 단계 더 깊이
-          for (const subKey of Object.keys(val)) {
-            const sub = val[subKey];
-            if (Array.isArray(sub) && sub.length > 0 && sub[0]?.id) {
-              items = sub;
-              console.log(`   [GQL] ${key}.${subKey} → ${items.length}개`);
-              break;
+
+      if (isReviewGql && data.data) {
+        // getReviews 응답: data.data.getReviews.* 탐색
+        const gql = data.data.getReviews || data.data.reviews || Object.values(data.data)[0];
+        if (gql) {
+          items = gql.items || gql.reviews || gql.list || gql.contents;
+          if (!items) {
+            // 한 단계 더 깊이 탐색
+            for (const v of Object.values(gql)) {
+              if (Array.isArray(v) && v.length > 0) { items = v; break; }
             }
           }
-          if (items) break;
         }
         // 구조 디버깅
-        if (!items && url.includes("getReviews")) {
-          console.log(`   [DEBUG] getReviews 구조: ${text.slice(0, 300)}`);
-        }
-      }
-
-      // REST 응답 구조 fallback
-      if (!items) {
+        console.log(`   [DEBUG] getReviews: ${text.slice(0, 400)}`);
+      } else {
         items = data.items || data.reviews || data.list || data.contents || data.result?.reviews;
       }
 
       if (items && Array.isArray(items) && items.length > 0) {
         captured = items;
-        console.log(`   ✅ 리뷰 캡처: ${items.length}개 (${url.slice(0, 60)})`);
+        console.log(`   ✅ 리뷰 캡처: ${items.length}개`);
       }
     } catch {}
   });
