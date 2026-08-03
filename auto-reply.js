@@ -1,22 +1,72 @@
 /**
  * 네이버 리뷰 자동 답글 스크립트
- * GitHub Actions에서 매일 9시/18시 실행
- * 환경변수: NAVER_NID_AUT, NAVER_NID_SES, GEMINI_API_KEY
+ * 실행: node auto-reply.js
+ * 환경변수(.env 또는 시스템): NAVER_NID_AUT, NAVER_NID_SES, GEMINI_API_KEY
+ * 선택 환경변수: MAX_PER_RUN(기본 5), HEADLESS(기본 new)
  */
 import puppeteer from "puppeteer";
 
+// .env 파일이 있으면 읽기 (Node 20.6+ 내장, 별도 패키지 불필요)
+try { process.loadEnvFile(); } catch { /* .env 없으면 시스템 환경변수 사용 */ }
+
 const BRANCHES = [
-  { name: "백석직영점", businessId: "8250200",  placeId: "1757412660",  greeting: "장수한우곱창 백석직영점" },
-  { name: "마곡발산점", businessId: "11542564", placeId: "2073101570",  greeting: "장수한우곱창 마곡발산점" },
+  { name: "백석직영점", businessId: "8250200",  placeId: "1757412660", greeting: "장수한우곱창 백석직영점" },
+  { name: "마곡발산점", businessId: "11542564", placeId: "2073101570", greeting: "장수한우곱창 마곡발산점" },
 ];
 
 const NID_AUT        = process.env.NAVER_NID_AUT;
 const NID_SES        = process.env.NAVER_NID_SES;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+const MAX_PER_RUN = Number(process.env.MAX_PER_RUN || 5); // 1회 실행당 최대 답글 수
+const HEADLESS    = process.env.HEADLESS === "false" ? false : "new";
 
-// ─── 브라우저 실행 ───────────────────────────────────────────────────────────
+const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36";
+
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+const randomDelay = (min, max) => delay(Math.floor((min + Math.random() * (max - min)) * 1000));
+
+// ─── 실제 네이버 GraphQL 쿼리 (2026-08 브라우저 캡처 기준) ────────────────────
+const CREATE_REPLY_QUERY = `fragment CommonReviewReplyFields on ReviewReply {
+  text
+  isSuspended
+  isQualified
+  createdDateTime
+  updatedDateTime
+  isDeleted
+  useReplyCandidate
+  replierDisplayName
+  suspendPostingReason
+  __typename
+}
+
+mutation createReply($input: CreateReviewReplyInput!) {
+  createReviewReply(input: $input) {
+    reply {
+      ...CommonReviewReplyFields
+      __typename
+    }
+    __typename
+  }
+}
+`;
+
+const CANDIDATES_QUERY = `query GetReviewReplyCandidates($id: String!) {
+  reviewReplyCandidates(id: $id) {
+    id
+    text
+    isOutdated
+    status
+    type
+    lengthPolicy
+    personaTypeKey
+    personaLengthKey
+    __typename
+  }
+}
+`;
+
+// ─── 브라우저 ─────────────────────────────────────────────────────────────────
 async function launchBrowser() {
   return puppeteer.launch({
     args: [
@@ -26,150 +76,77 @@ async function launchBrowser() {
       "--disable-gpu",
       "--window-size=1280,800",
     ],
-    headless: "new",
+    headless: HEADLESS,
     defaultViewport: { width: 1280, height: 800 },
   });
 }
 
-// ─── 네이버 쿠키 세션 (로그인 없이 직접 주입) ────────────────────────────────
 function getSession() {
   if (!NID_AUT || !NID_SES) throw new Error("NAVER_NID_AUT, NAVER_NID_SES 환경변수가 없습니다.");
   console.log("✅ 네이버 쿠키 세션 사용");
   return { nidAut: NID_AUT, nidSes: NID_SES };
 }
 
-// ─── 미답글 리뷰 수집 ─────────────────────────────────────────────────────────
-async function fetchUnrepliedReviews(browser, { nidAut, nidSes }, businessId, placeId) {
+async function newSessionPage(browser, { nidAut, nidSes }) {
   const page = await browser.newPage();
-  await page.setUserAgent(
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
-  );
+  await page.setUserAgent(UA);
   await page.setCookie(
     { name: "NID_AUT", value: nidAut, domain: ".naver.com", path: "/" },
     { name: "NID_SES", value: nidSes, domain: ".naver.com", path: "/" }
   );
+  return page;
+}
+
+// ─── 미답글 리뷰 수집 ─────────────────────────────────────────────────────────
+// 리뷰 목록을 담은 page를 그대로 반환한다. 이후 답글 등록에 재사용해서
+// 같은 페이지 컨텍스트(Referer/Origin)에서 요청이 나가도록 한다.
+async function fetchUnrepliedReviews(browser, session, businessId) {
+  const page = await newSessionPage(browser, session);
 
   let captured = null;
-
   page.on("response", async (response) => {
     if (captured) return;
     const url = response.url();
-
-    // getReviews GraphQL만 타겟
-    const isReviewGql = url.includes("graphql") && url.includes("getReviews");
-    // REST fallback
-    const isReviewRest = !url.includes("graphql") && (url.includes("review") || url.includes("Review"))
-                         && !url.endsWith(".js") && !url.endsWith(".css");
-    if (!isReviewGql && !isReviewRest) return;
-
+    if (!(url.includes("graphql") && url.includes("getReviews"))) return;
     try {
-      const text = await response.text();
-      if (text.trim().startsWith("<") || !text.includes("{")) return;
-
-      const data = JSON.parse(text);
-      let items = null;
-
-      if (isReviewGql && data.data) {
-        // getReviews 응답: data.data.getReviews.* 탐색
-        const gql = data.data.getReviews || data.data.reviews || Object.values(data.data)[0];
-        if (gql) {
-          items = gql.items || gql.reviews || gql.list || gql.contents;
-          if (!items) {
-            // 한 단계 더 깊이 탐색
-            for (const v of Object.values(gql)) {
-              if (Array.isArray(v) && v.length > 0) { items = v; break; }
-            }
-          }
-        }
-        // 구조 디버깅
-        console.log(`   [DEBUG] getReviews: ${text.slice(0, 400)}`);
-      } else {
-        items = data.items || data.reviews || data.list || data.contents || data.result?.reviews;
-      }
-
-      if (items && Array.isArray(items) && items.length > 0) {
+      const data = JSON.parse(await response.text());
+      const gql = data?.data?.reviews || data?.data?.getReviews;
+      const items = gql?.items || gql?.reviews || gql?.list;
+      if (Array.isArray(items) && items.length > 0) {
         captured = items;
-        console.log(`   ✅ 리뷰 캡처: ${items.length}개`);
+        console.log(`   ✅ 리뷰 캡처: ${items.length}개 (전체 ${gql.totalCount ?? "?"}건)`);
       }
-    } catch {}
+    } catch { /* 파싱 실패한 응답은 무시 */ }
   });
 
-  for (const url of [
-    `https://smartplace.naver.com/bizes/place/${businessId}/reviews`,
-    `https://smartplace.naver.com/places/${businessId}/reviews`,
-    `https://smartplace.naver.com/business/${businessId}/review`,
-  ]) {
-    if (captured) break;
-    try {
-      console.log(`   이동 중: ${url}`);
-      await page.goto(url, { waitUntil: "networkidle2", timeout: 20000 });
-      const finalUrl = page.url();
-      const title = await page.title();
-      console.log(`   현재 URL: ${finalUrl} / 타이틀: ${title}`);
-      await delay(4000);
-    } catch (e) {
-      console.log(`   이동 실패: ${e.message}`);
-    }
-  }
+  const url = `https://smartplace.naver.com/bizes/place/${businessId}/reviews`;
+  console.log(`   이동 중: ${url}`);
+  await page.goto(url, { waitUntil: "networkidle2", timeout: 30000 });
+  await delay(4000);
 
-  // Admin API fallback
   if (!captured) {
-    console.log(`   API 직접 호출 시도...`);
-    try {
-      await page.goto("https://smartplace.naver.com/home", { waitUntil: "networkidle2", timeout: 20000 });
-      await delay(2000);
-      const result = await page.evaluate(async (bizId) => {
-        const log = [];
-        for (const url of [
-          `https://smartplace.naver.com/businessticket/v1/businesses/${bizId}/reviews?page=1&size=20&sorted=RECENTLY`,
-          `https://smartplace.naver.com/v1/businesses/${bizId}/reviews?page=1&size=20`,
-          `https://smartplace.naver.com/api/v1/businesses/${bizId}/reviews?page=1&size=20`,
-        ]) {
-          try {
-            const r = await fetch(url, { credentials: "include", headers: { Accept: "application/json" } });
-            const text = await r.text();
-            log.push(`${r.status} ${url.slice(0, 60)} → ${text.slice(0, 80)}`);
-            if (r.ok) {
-              const data = JSON.parse(text);
-              const items = data.items || data.reviews || data.list || data.contents;
-              if (items?.length > 0) return { ok: true, items, log };
-            }
-          } catch (e) {
-            log.push(`ERR ${url.slice(0, 60)} → ${e.message}`);
-          }
-        }
-        return { ok: false, log };
-      }, businessId);
-      result.log?.forEach(l => console.log(`   [API] ${l}`));
-      if (result.ok) captured = result.items;
-    } catch (e) {
-      console.log(`   Admin 페이지 오류: ${e.message}`);
-    }
+    console.log(`   ⚠️ 리뷰를 가져오지 못했습니다. (현재 URL: ${page.url()})`);
+    return { page, reviews: [] };
   }
 
-  await page.close();
-  if (!captured) return [];
-
-  // 구조 파악용 디버그 (첫 번째 아이템만)
-  if (captured.length > 0) {
-    console.log(`   [STRUCT] 첫 리뷰 키: ${JSON.stringify(Object.keys(captured[0]))}`);
-    console.log(`   [STRUCT] 샘플: ${JSON.stringify(captured[0]).slice(0, 500)}`);
-  }
-
-  return captured
+  const reviews = captured
     .map((r) => ({
-      id:               String(r.id || r.reviewId || r.reviewNo || ""),
-      author:           r.author?.displayName || r.writer?.nickname || r.authorName || "익명",
-      rating:           r.rating || r.starRating || 5,
-      content:          r.content?.text || r.body || (typeof r.content === "string" ? r.content : "") || r.text || "",
-      tags:             (Array.isArray(r.keywords) ? r.keywords : Array.isArray(r.tags) ? r.tags : Array.isArray(r.content?.tags) ? r.content.tags : []).map((k) => k.text || k.name || k),
-      replied:          !!(r.hasReply || r.reply),
-      bookingBusinessId: r.bookingDetail?.businessId || null,
+      id:      String(r.id || ""),
+      author:  r.author?.displayName || "익명",
+      rating:  r.rating || 5,
+      content: r.content?.text || "",
+      tags: (Array.isArray(r.keywords) ? r.keywords
+           : Array.isArray(r.tags)     ? r.tags
+           : Array.isArray(r.content?.tags) ? r.content.tags
+           : []).map((k) => k.text || k.name || k),
+      replied: !!(r.hasReply || r.reply),
     }))
     .filter((r) => !r.replied && r.id);
+
+  return { page, reviews };
 }
 
-// ─── Gemini AI 답글 생성 ──────────────────────────────────────────────────────
+// ─── Gemini 답글 생성 ─────────────────────────────────────────────────────────
 function buildPrompt(review, greeting) {
   return `당신은 친절하고 활기찬 '${greeting}' 사장님입니다.
 
@@ -232,72 +209,70 @@ async function generateReply(review, greeting, retryCount = 0) {
 }
 
 // ─── 답글 등록 ────────────────────────────────────────────────────────────────
-async function postReply(browser, { nidAut, nidSes }, businessId, placeId, reviewId, replyContent) {
-  const page = await browser.newPage();
-  await page.setUserAgent(
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
-  );
-  await page.setCookie(
-    { name: "NID_AUT", value: nidAut, domain: ".naver.com", path: "/" },
-    { name: "NID_SES", value: nidSes, domain: ".naver.com", path: "/" }
-  );
+// 실제 브라우저가 보내는 요청을 그대로 재현한다.
+//   POST https://smartplace.naver.com/graphql?opName=createReply
+//   { operationName, variables: { input: { text, reviewId, placeId, replyCandidateId? } }, query }
+// replyCandidateId 는 네이버 AI 초안을 쓸 때만 붙는 값으로 보이므로
+// 1차로 생략하고 시도, 거부되면 후보 ID를 조회해 재시도한다.
+async function postReply(page, placeId, reviewId, replyContent) {
+  const result = await page.evaluate(
+    async (createQuery, candidatesQuery, revId, plcId, text) => {
+      const logs = [];
 
-  await page.goto("https://smartplace.naver.com", { waitUntil: "networkidle2", timeout: 30000 });
-
-  const apiResult = await page.evaluate(async (bizId, placeId, revId, content) => {
-    const logs = [];
-
-    // 1. GraphQL mutation 시도
-    const gqlMutations = [
-      { name: "CreateOwnerReply",   field: "createOwnerReply" },
-      { name: "WriteOwnerReply",    field: "writeOwnerReply" },
-      { name: "CreateReviewReply",  field: "createReviewReply" },
-      { name: "AddOwnerReply",      field: "addOwnerReply" },
-    ];
-    for (const { name, field } of gqlMutations) {
-      try {
-        const r = await fetch("https://smartplace.naver.com/graphql", {
+      async function gql(opName, body) {
+        const r = await fetch(`https://smartplace.naver.com/graphql?opName=${opName}`, {
           method: "POST",
           credentials: "include",
           headers: { "Content-Type": "application/json", Accept: "application/json" },
-          body: JSON.stringify({
-            operationName: name,
-            variables: { reviewId: revId, content, placeId },
-            query: `mutation ${name}($reviewId:ID!,$content:String!,$placeId:ID){${field}(reviewId:$reviewId,content:$content,placeId:$placeId){id content __typename}}`,
-          }),
+          body: JSON.stringify(body),
         });
-        const text = await r.text();
-        logs.push(`GQL ${name}: ${r.status} → ${text.slice(0, 80)}`);
-        if (r.ok && !text.includes('"errors"')) return { ok: true, method: `gql:${name}`, logs };
-      } catch (e) { logs.push(`GQL ${name} ERR: ${e.message}`); }
-    }
+        return { status: r.status, text: await r.text() };
+      }
+      const succeeded = (r) => r.status === 200 && !r.text.includes('"errors"');
 
-    // 2. REST 엔드포인트 시도 (placeId 기반)
-    for (const url of [
-      `https://smartplace.naver.com/businessticket/v1/businesses/${placeId}/reviews/${revId}/reply`,
-      `https://smartplace.naver.com/api/v1/businesses/${placeId}/reviews/${revId}/reply`,
-      `https://smartplace.naver.com/businessticket/v1/businesses/${bizId}/reviews/${revId}/reply`,
-    ]) {
+      // 1차 — replyCandidateId 없이
+      let res = await gql("createReply", {
+        operationName: "createReply",
+        variables: { input: { text, reviewId: revId, placeId: plcId } },
+        query: createQuery,
+      });
+      logs.push(`1차(후보ID 없음): ${res.status} → ${res.text.slice(0, 160)}`);
+      if (succeeded(res)) return { ok: true, method: "no-candidate", logs };
+
+      // 2차 — 네이버 AI 초안 후보 ID를 받아서 재시도
+      const cand = await gql("GetReviewReplyCandidates", {
+        operationName: "GetReviewReplyCandidates",
+        variables: { id: revId },
+        query: candidatesQuery,
+      });
+      logs.push(`후보 조회: ${cand.status} → ${cand.text.slice(0, 160)}`);
+
+      let candidateId = null;
       try {
-        const r = await fetch(url, {
-          method: "POST", credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ content }),
-        });
-        const text = await r.text();
-        logs.push(`REST ${url.slice(40, 90)}: ${r.status} → ${text.slice(0, 60)}`);
-        if (r.ok) return { ok: true, method: "rest", logs };
-      } catch (e) { logs.push(`REST ERR: ${e.message}`); }
-    }
+        const list = JSON.parse(cand.text)?.data?.reviewReplyCandidates || [];
+        candidateId = (list.find((c) => !c.isOutdated) || list[0])?.id || null;
+      } catch { /* 파싱 실패 시 후보 없음으로 처리 */ }
 
-    return { ok: false, logs };
-  }, businessId, placeId, reviewId, replyContent);
+      if (!candidateId) {
+        logs.push("후보 ID를 찾지 못했습니다.");
+        return { ok: false, logs };
+      }
 
-  // 디버그 로그 출력
-  apiResult.logs?.forEach(l => console.log(`      [REPLY] ${l}`));
+      res = await gql("createReply", {
+        operationName: "createReply",
+        variables: { input: { text, reviewId: revId, placeId: plcId, replyCandidateId: candidateId } },
+        query: createQuery,
+      });
+      logs.push(`2차(후보ID ${candidateId}): ${res.status} → ${res.text.slice(0, 160)}`);
+      if (succeeded(res)) return { ok: true, method: "with-candidate", logs };
 
-  await page.close();
-  return apiResult.ok;
+      return { ok: false, logs };
+    },
+    CREATE_REPLY_QUERY, CANDIDATES_QUERY, reviewId, placeId, replyContent
+  );
+
+  result.logs?.forEach((l) => console.log(`      [REPLY] ${l}`));
+  return result.ok;
 }
 
 // ─── 메인 ─────────────────────────────────────────────────────────────────────
@@ -309,6 +284,7 @@ async function main() {
 
   const startTime = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
   console.log(`\n🚀 네이버 리뷰 자동 답글 시작 — ${startTime}`);
+  console.log(`   1회 최대 처리: ${MAX_PER_RUN}건 / 지점당`);
 
   const report = { success: 0, fail: 0, skipped: 0, details: [] };
   const browser = await launchBrowser();
@@ -319,51 +295,51 @@ async function main() {
     for (const branch of BRANCHES) {
       console.log(`\n📍 [${branch.name}] 처리 중...`);
 
-      let reviews;
+      let page = null;
       try {
-        reviews = await fetchUnrepliedReviews(browser, session, branch.businessId, branch.placeId);
+        const result = await fetchUnrepliedReviews(browser, session, branch.businessId);
+        page = result.page;
+        const reviews = result.reviews.slice(0, MAX_PER_RUN);
+
+        if (reviews.length === 0) {
+          console.log("   미답글 없음 ✨");
+          continue;
+        }
+        console.log(`   미답글 ${result.reviews.length}건 중 ${reviews.length}건 처리`);
+
+        for (const review of reviews) {
+          try {
+            const reply = await generateReply(review, branch.greeting);
+            if (!reply) throw new Error("답글 생성 실패 (빈 응답)");
+
+            const posted = await postReply(page, branch.placeId, review.id, reply);
+            if (!posted) throw new Error("답글 등록 실패");
+
+            console.log(`   ✅ [${review.author}] 완료`);
+            report.success++;
+            report.details.push({ branch: branch.name, author: review.author, status: "✅" });
+          } catch (e) {
+            console.error(`   ❌ [${review.author}] ${e.message}`);
+            report.fail++;
+            report.details.push({ branch: branch.name, author: review.author, status: "❌", error: e.message });
+          }
+          // 사람처럼 보이도록 20~60초 랜덤 간격
+          await randomDelay(20, 60);
+        }
       } catch (e) {
         console.error(`   리뷰 수집 실패: ${e.message}`);
         report.skipped++;
-        continue;
-      }
-
-      if (reviews.length === 0) {
-        console.log("   미답글 없음 ✨");
-        continue;
-      }
-
-      console.log(`   미답글 ${reviews.length}개 처리 시작`);
-
-      for (const review of reviews) {
-        try {
-          const reply = await generateReply(review, branch.greeting);
-          if (!reply) throw new Error("답글 생성 실패 (빈 응답)");
-
-          const posted = await postReply(browser, session, branch.businessId, branch.placeId, review.id, reply);
-          if (!posted) throw new Error("답글 등록 API 실패");
-
-          console.log(`   ✅ [${review.author}] 완료`);
-          report.success++;
-          report.details.push({ branch: branch.name, author: review.author, status: "✅" });
-
-          await delay(5000); // 요청 간격
-        } catch (e) {
-          console.error(`   ❌ [${review.author}] ${e.message}`);
-          report.fail++;
-          report.details.push({ branch: branch.name, author: review.author, status: "❌", error: e.message });
-          await delay(2000);
-        }
+      } finally {
+        if (page) await page.close().catch(() => {});
       }
     }
   } finally {
     await browser.close();
   }
 
-  // ─── 결과 리포트 ───
   console.log("\n════════════ 결과 리포트 ════════════");
-  console.log(`✅ 성공: ${report.success}개`);
-  console.log(`❌ 실패: ${report.fail}개`);
+  console.log(`✅ 성공: ${report.success}건`);
+  console.log(`❌ 실패: ${report.fail}건`);
   if (report.skipped) console.log(`⏭ 수집 실패: ${report.skipped}개 지점`);
   report.details.forEach((d) =>
     console.log(`  ${d.status} [${d.branch}] ${d.author}${d.error ? ` — ${d.error}` : ""}`)
