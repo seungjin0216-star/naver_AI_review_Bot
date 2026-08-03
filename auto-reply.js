@@ -1,27 +1,45 @@
 /**
  * 네이버 리뷰 자동 답글 스크립트
  * 실행: node auto-reply.js
- * 환경변수(.env 또는 시스템): NAVER_NID_AUT, NAVER_NID_SES, GEMINI_API_KEY
- * 선택 환경변수: MAX_PER_RUN(기본 5), HEADLESS(기본 new)
+ *
+ * 로그인은 전용 크롬 프로필(chrome-profile 폴더)에 저장된 세션을 그대로 사용한다.
+ * 최초 1회 `node login.js` 로 로그인해두면 이후에는 자동으로 유지된다.
+ *
+ * 필수 환경변수: GEMINI_API_KEY
+ * 선택 환경변수: MAX_PER_RUN(기본 5), HEADLESS(기본 false), CHROME_PROFILE
  */
 import puppeteer from "puppeteer";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 // .env 파일이 있으면 읽기 (Node 20.6+ 내장, 별도 패키지 불필요)
-try { process.loadEnvFile(); } catch { /* .env 없으면 시스템 환경변수 사용 */ }
+// 시스템 환경변수가 이미 있으면 그쪽이 우선이므로, .env 값을 항상 덮어쓴다.
+try {
+  const before = { ...process.env };
+  process.loadEnvFile();
+  const fs = await import("node:fs");
+  for (const line of fs.readFileSync(".env", "utf8").split(/\r?\n/)) {
+    const i = line.indexOf("=");
+    if (i < 1 || line.trim().startsWith("#")) continue;
+    const k = line.slice(0, i).trim();
+    const v = line.slice(i + 1).trim();
+    if (before[k] !== undefined && before[k] !== v) {
+      console.log(`   ⚠️ 시스템 환경변수 ${k} 를 .env 값으로 덮어씁니다.`);
+    }
+    process.env[k] = v;
+  }
+} catch { /* .env 없으면 시스템 환경변수 사용 */ }
 
 const BRANCHES = [
   { name: "백석직영점", businessId: "8250200",  placeId: "1757412660", greeting: "장수한우곱창 백석직영점" },
   { name: "마곡발산점", businessId: "11542564", placeId: "2073101570", greeting: "장수한우곱창 마곡발산점" },
 ];
 
-const NID_AUT        = process.env.NAVER_NID_AUT;
-const NID_SES        = process.env.NAVER_NID_SES;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-const MAX_PER_RUN = Number(process.env.MAX_PER_RUN || 5); // 1회 실행당 최대 답글 수
-const HEADLESS    = process.env.HEADLESS === "false" ? false : "new";
-
-const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36";
+const MAX_PER_RUN  = Number(process.env.MAX_PER_RUN || 5); // 1회 실행당 최대 답글 수
+const HEADLESS     = process.env.HEADLESS === "true" ? "new" : false;
+export const PROFILE_DIR = process.env.CHROME_PROFILE || path.resolve("chrome-profile");
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 const randomDelay = (min, max) => delay(Math.floor((min + Math.random() * (max - min)) * 1000));
@@ -67,41 +85,36 @@ const CANDIDATES_QUERY = `query GetReviewReplyCandidates($id: String!) {
 `;
 
 // ─── 브라우저 ─────────────────────────────────────────────────────────────────
-async function launchBrowser() {
-  return puppeteer.launch({
-    args: [
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-dev-shm-usage",
-      "--disable-gpu",
-      "--window-size=1280,800",
-    ],
-    headless: HEADLESS,
-    defaultViewport: { width: 1280, height: 800 },
-  });
+// 전용 크롬 프로필을 사용한다. 로그인 세션(쿠키 전체)이 이 폴더에 저장돼 있어
+// 별도로 쿠키를 주입할 필요가 없다.
+export async function launchBrowser(headless = HEADLESS) {
+  const options = {
+    userDataDir: PROFILE_DIR,
+    headless,
+    defaultViewport: null,
+    args: ["--disable-dev-shm-usage", "--window-size=1280,900", "--no-first-run"],
+  };
+  // 실제 설치된 크롬을 우선 사용 (봇 탐지에 유리), 없으면 puppeteer 내장 크롬
+  try {
+    return await puppeteer.launch({ ...options, channel: "chrome" });
+  } catch {
+    return puppeteer.launch(options);
+  }
 }
 
-function getSession() {
-  if (!NID_AUT || !NID_SES) throw new Error("NAVER_NID_AUT, NAVER_NID_SES 환경변수가 없습니다.");
-  console.log("✅ 네이버 쿠키 세션 사용");
-  return { nidAut: NID_AUT, nidSes: NID_SES };
-}
-
-async function newSessionPage(browser, { nidAut, nidSes }) {
-  const page = await browser.newPage();
-  await page.setUserAgent(UA);
-  await page.setCookie(
-    { name: "NID_AUT", value: nidAut, domain: ".naver.com", path: "/" },
-    { name: "NID_SES", value: nidSes, domain: ".naver.com", path: "/" }
-  );
-  return page;
+// 로그인이 풀렸는지 확인
+function assertLoggedIn(page) {
+  const url = page.url();
+  if (url.includes("nid.naver.com") || url.includes("nidlogin")) {
+    throw new Error("네이버 로그인이 풀렸습니다. 노트북에서 `node login.js` 를 실행해 다시 로그인해주세요.");
+  }
 }
 
 // ─── 미답글 리뷰 수집 ─────────────────────────────────────────────────────────
 // 리뷰 목록을 담은 page를 그대로 반환한다. 이후 답글 등록에 재사용해서
 // 같은 페이지 컨텍스트(Referer/Origin)에서 요청이 나가도록 한다.
-async function fetchUnrepliedReviews(browser, session, businessId) {
-  const page = await newSessionPage(browser, session);
+async function fetchUnrepliedReviews(browser, businessId) {
+  const page = await browser.newPage();
 
   let captured = null;
   page.on("response", async (response) => {
@@ -123,6 +136,7 @@ async function fetchUnrepliedReviews(browser, session, businessId) {
   console.log(`   이동 중: ${url}`);
   await page.goto(url, { waitUntil: "networkidle2", timeout: 30000 });
   await delay(4000);
+  assertLoggedIn(page);
 
   if (!captured) {
     console.log(`   ⚠️ 리뷰를 가져오지 못했습니다. (현재 URL: ${page.url()})`);
@@ -277,27 +291,26 @@ async function postReply(page, placeId, reviewId, replyContent) {
 
 // ─── 메인 ─────────────────────────────────────────────────────────────────────
 async function main() {
-  if (!NID_AUT || !NID_SES || !GEMINI_API_KEY) {
-    console.error("❌ 환경변수 누락: NAVER_NID_AUT, NAVER_NID_SES, GEMINI_API_KEY 를 설정하세요.");
+  if (!GEMINI_API_KEY) {
+    console.error("❌ 환경변수 누락: GEMINI_API_KEY 를 .env 에 설정하세요.");
     process.exit(1);
   }
 
   const startTime = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
   console.log(`\n🚀 네이버 리뷰 자동 답글 시작 — ${startTime}`);
+  console.log(`   프로필: ${PROFILE_DIR}`);
   console.log(`   1회 최대 처리: ${MAX_PER_RUN}건 / 지점당`);
 
   const report = { success: 0, fail: 0, skipped: 0, details: [] };
   const browser = await launchBrowser();
 
   try {
-    const session = getSession();
-
     for (const branch of BRANCHES) {
       console.log(`\n📍 [${branch.name}] 처리 중...`);
 
       let page = null;
       try {
-        const result = await fetchUnrepliedReviews(browser, session, branch.businessId);
+        const result = await fetchUnrepliedReviews(browser, branch.businessId);
         page = result.page;
         const reviews = result.reviews.slice(0, MAX_PER_RUN);
 
@@ -349,7 +362,13 @@ async function main() {
   if (report.success === 0 && report.fail > 0) process.exit(1);
 }
 
-main().catch((e) => {
-  console.error("💥 Fatal:", e.message);
-  process.exit(1);
-});
+// login.js 가 이 파일을 import 할 때는 실행하지 않는다.
+const isDirectRun =
+  process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (isDirectRun) {
+  main().catch((e) => {
+    console.error("💥 Fatal:", e.message);
+    process.exit(1);
+  });
+}
