@@ -6,7 +6,7 @@
  * 여기서 한 번 로그인해두면 auto-reply.js 가 그 세션을 그대로 사용한다.
  */
 import readline from "node:readline/promises";
-import { launchBrowser, PROFILE_DIR } from "./auto-reply.js";
+import { launchBrowser, PROFILE_DIR, hideAutomation } from "./auto-reply.js";
 
 const CHECK_URL = "https://smartplace.naver.com/bizes/place/8250200/reviews";
 
@@ -15,6 +15,7 @@ console.log(`   프로필 위치: ${PROFILE_DIR}\n`);
 
 const browser = await launchBrowser(false); // 반드시 창을 띄운다
 const page = (await browser.pages())[0] || (await browser.newPage());
+await hideAutomation(page);
 
 await page.goto("https://nid.naver.com/nidlogin.login", { waitUntil: "domcontentloaded" });
 

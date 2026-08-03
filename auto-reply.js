@@ -92,7 +92,15 @@ export async function launchBrowser(headless = HEADLESS) {
     userDataDir: PROFILE_DIR,
     headless,
     defaultViewport: null,
-    args: ["--disable-dev-shm-usage", "--window-size=1280,900", "--no-first-run"],
+    args: [
+      "--disable-dev-shm-usage",
+      "--window-size=1280,900",
+      "--no-first-run",
+      // 자동화 탐지 회피: 네이버가 navigator.webdriver 를 보고 앱 초기화를 막는다
+      "--disable-blink-features=AutomationControlled",
+      "--exclude-switches=enable-automation",
+    ],
+    ignoreDefaultArgs: ["--enable-automation"],
   };
   // 실제 설치된 크롬을 우선 사용 (봇 탐지에 유리), 없으면 puppeteer 내장 크롬
   try {
@@ -100,6 +108,16 @@ export async function launchBrowser(headless = HEADLESS) {
   } catch {
     return puppeteer.launch(options);
   }
+}
+
+// 페이지가 열리기 전에 자동화 흔적을 지운다
+export async function hideAutomation(page) {
+  await page.evaluateOnNewDocument(() => {
+    Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+    Object.defineProperty(navigator, "languages", { get: () => ["ko-KR", "ko"] });
+    Object.defineProperty(navigator, "plugins", { get: () => [1, 2, 3, 4, 5] });
+    window.chrome = window.chrome || { runtime: {} };
+  });
 }
 
 // 로그인이 풀렸는지 확인
@@ -115,6 +133,7 @@ function assertLoggedIn(page) {
 // 같은 페이지 컨텍스트(Referer/Origin)에서 요청이 나가도록 한다.
 async function fetchUnrepliedReviews(browser, businessId) {
   const page = await browser.newPage();
+  await hideAutomation(page);
 
   let captured = null;
   page.on("response", async (response) => {
@@ -134,12 +153,21 @@ async function fetchUnrepliedReviews(browser, businessId) {
 
   const url = `https://smartplace.naver.com/bizes/place/${businessId}/reviews`;
   console.log(`   이동 중: ${url}`);
-  await page.goto(url, { waitUntil: "networkidle2", timeout: 30000 });
-  await delay(4000);
+  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
   assertLoggedIn(page);
 
+  // 리뷰 응답이 올 때까지 최대 40초 대기 (4초 고정 대기 대신)
+  for (let i = 0; i < 40 && !captured; i++) await delay(1000);
+
   if (!captured) {
+    const shot = path.resolve(`debug-${businessId}.png`);
+    try {
+      await page.screenshot({ path: shot, fullPage: false });
+      console.log(`   📸 화면 저장: ${shot}`);
+    } catch { /* 스크린샷 실패는 무시 */ }
+    const bodyText = await page.evaluate(() => document.body?.innerText?.slice(0, 200) || "");
     console.log(`   ⚠️ 리뷰를 가져오지 못했습니다. (현재 URL: ${page.url()})`);
+    console.log(`   화면 내용: ${bodyText.replace(/\n+/g, " / ")}`);
     return { page, reviews: [] };
   }
 
