@@ -411,28 +411,42 @@ async function describeState(page, key) {
 }
 
 async function postReplyViaUI(page, key, replyContent) {
-  // 1) AI 초안 패널 열기
-  const opened = await clickInCard(page, key, /답글\s*초안|초안을\s*작성/);
-  if (opened !== "ok") throw new Error(`AI 초안 버튼 클릭 실패 (${opened})`);
+  // 패널이 열렸다가 도로 닫히는 경우가 있어, 매 시도마다 처음(AI 초안 클릭)부터 다시 한다.
+  let inEdit = false;
 
-  if (!(await waitButtonInCard(page, key, /이\s*답글\s*수정|수정\s*취소/, 25000)))
-    throw new Error("AI 초안이 준비되지 않았습니다.");
-
-  // 2) 편집 모드 진입 — 입력창이 실제로 뜰 때까지 최대 3회 시도
-  //    이미 편집 모드면(수정 취소 버튼 존재) 다시 클릭하지 않는다.
-  let inEdit = await waitTextarea(page, key, 2000);
   for (let attempt = 1; attempt <= 3 && !inEdit; attempt++) {
-    const already = await waitButtonInCard(page, key, /수정\s*취소/, 300);
-    if (!already) {
-      const clicked = await clickInCard(page, key, /이\s*답글\s*수정/);
-      if (clicked !== "ok") console.log(`      ↻ 수정 버튼 클릭 결과: ${clicked}`);
+    // 1) 패널이 닫혀 있으면 AI 초안 버튼부터 클릭
+    const panelOpen = await waitButtonInCard(page, key, /이\s*답글\s*수정|수정\s*취소/, 500);
+    if (!panelOpen) {
+      const opened = await clickInCard(page, key, /답글\s*초안|초안을\s*작성/);
+      if (opened !== "ok" && attempt === 3)
+        throw new Error(`AI 초안 버튼 클릭 실패 (${opened})`);
+
+      if (!(await waitButtonInCard(page, key, /이\s*답글\s*수정|수정\s*취소/, 30000))) {
+        console.log(`      ↻ AI 초안이 열리지 않음 — 재시도 (${attempt}/3)`);
+        await delay(3000);
+        continue;
+      }
+      await delay(1200); // 패널 렌더링 안정화
     }
-    inEdit = await waitTextarea(page, key, 8000);
+
+    // 2) 편집 모드 진입 (이미 편집 중이면 다시 누르지 않는다)
+    if (!(await waitButtonInCard(page, key, /수정\s*취소/, 500))) {
+      const clicked = await clickInCard(page, key, /이\s*답글\s*수정/);
+      if (clicked !== "ok") {
+        console.log(`      ↻ 수정 버튼 클릭 결과: ${clicked} — 재시도 (${attempt}/3)`);
+        await delay(2500);
+        continue;
+      }
+    }
+
+    inEdit = await waitTextarea(page, key, 12000);
     if (!inEdit) {
-      console.log(`      ↻ 편집 모드 재시도 (${attempt}/3)`);
-      await delay(2000);
+      console.log(`      ↻ 입력창이 뜨지 않음 — 재시도 (${attempt}/3)`);
+      await delay(2500);
     }
   }
+
   if (!inEdit) {
     const state = await describeState(page, key);
     throw new Error(`편집 모드 전환 실패 — ${JSON.stringify(state)}`);
