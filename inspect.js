@@ -102,9 +102,97 @@ console.log(JSON.stringify(info.reviewDataEls, null, 1));
 
 console.log("\ntextarea 개수:", info.textareaCount);
 
-const shot = path.resolve("inspect.png");
+const shot = path.resolve("inspect-1.png");
 await page.screenshot({ path: shot, fullPage: false });
 console.log(`\n📸 화면 저장: ${shot}`);
+
+// ── 2단계: 'AI가 답글 초안을 작성했어요' 클릭 후 나타나는 UI 조사 ──
+// (등록 버튼은 절대 누르지 않는다)
+console.log("\n═══════ AI 초안 패널 열기 ═══════");
+
+const opened = await page.evaluate(() => {
+  const btns = Array.from(document.querySelectorAll("button, [role='button'], a"));
+  const t = btns.find((b) => /답글\s*초안|초안을\s*작성/.test(b.innerText || ""));
+  if (!t) return false;
+  t.scrollIntoView({ block: "center" });
+  t.click();
+  return (t.innerText || "").trim().replace(/\s+/g, " ");
+});
+console.log("클릭한 버튼:", opened || "❌ 찾지 못함");
+
+await delay(6000);
+
+const panel = await page.evaluate(() => {
+  const out = {};
+  out.buttons = [...new Set(
+    Array.from(document.querySelectorAll("button, [role='button']"))
+      .map((b) => (b.innerText || "").trim().replace(/\s+/g, " "))
+      .filter((t) => t && t.length < 30)
+  )];
+  const tas = Array.from(document.querySelectorAll("textarea"));
+  out.textareas = tas.map((ta) => ({
+    cls: (ta.className || "").toString().slice(0, 80),
+    placeholder: ta.placeholder || "",
+    valueLen: (ta.value || "").length,
+    valueHead: (ta.value || "").slice(0, 60),
+    readOnly: ta.readOnly,
+  }));
+  out.editableDivs = Array.from(document.querySelectorAll("[contenteditable='true']")).length;
+  return out;
+});
+
+console.log("\n── 패널 열린 뒤 버튼 목록 ──");
+console.log(panel.buttons.join("  |  "));
+console.log("\n── textarea 상태 ──");
+console.log(JSON.stringify(panel.textareas, null, 1));
+console.log("contenteditable 요소 수:", panel.editableDivs);
+
+const shot2 = path.resolve("inspect-2.png");
+await page.screenshot({ path: shot2, fullPage: false });
+console.log(`\n📸 화면 저장: ${shot2}`);
+
+// ── 3단계: '이 답글 수정' 클릭 후 입력창 조사 ──
+console.log("\n═══════ '이 답글 수정' 클릭 ═══════");
+const edited = await page.evaluate(() => {
+  const btns = Array.from(document.querySelectorAll("button, [role='button'], a"));
+  const t = btns.find((b) => /답글\s*수정/.test(b.innerText || ""));
+  if (!t) return false;
+  t.click();
+  return (t.innerText || "").trim().replace(/\s+/g, " ");
+});
+console.log("클릭한 버튼:", edited || "❌ 찾지 못함");
+
+await delay(3000);
+
+const editor = await page.evaluate(() => ({
+  buttons: [...new Set(
+    Array.from(document.querySelectorAll("button, [role='button']"))
+      .map((b) => (b.innerText || "").trim().replace(/\s+/g, " "))
+      .filter((t) => t && t.length < 30)
+  )],
+  textareas: Array.from(document.querySelectorAll("textarea")).map((ta) => ({
+    cls: (ta.className || "").toString().slice(0, 80),
+    placeholder: ta.placeholder || "",
+    valueLen: (ta.value || "").length,
+    readOnly: ta.readOnly,
+    disabled: ta.disabled,
+  })),
+  editableDivs: Array.from(document.querySelectorAll("[contenteditable='true']")).map((d) => ({
+    cls: (d.className || "").toString().slice(0, 80),
+    textLen: (d.innerText || "").length,
+  })),
+}));
+
+console.log("\n── 편집 모드 버튼 목록 ──");
+console.log(editor.buttons.join("  |  "));
+console.log("\n── 입력창 ──");
+console.log("textarea:", JSON.stringify(editor.textareas, null, 1));
+console.log("contenteditable:", JSON.stringify(editor.editableDivs, null, 1));
+
+const shot3 = path.resolve("inspect-3.png");
+await page.screenshot({ path: shot3, fullPage: false });
+console.log(`📸 화면 저장: ${shot3}`);
+console.log("\n⚠️ 등록 버튼은 누르지 않았습니다. 실제 답글은 올라가지 않았습니다.");
 
 console.log("\n⏸  브라우저를 20초 더 열어둡니다. 화면을 직접 확인해보세요.");
 await delay(20000);
