@@ -342,22 +342,29 @@ async function waitButtonInCard(page, key, pattern, timeoutMs = 15000) {
   return false;
 }
 
-// 카드에 딸린 textarea 를 찾아 텍스트를 채운다.
-// 카드 안에 없으면 부모 쪽으로 범위를 넓혀 가장 가까운 것을 쓴다.
+// 편집 중인 textarea 를 찾는 단일 로직 (대기·입력이 같은 규칙을 쓴다)
+//  1순위: 우리 카드 안
+//  2순위: 페이지에 textarea 가 딱 하나뿐이면 그것 (편집 모드는 한 번에 하나만 열린다)
+const FIND_TA_FN = `
+function __findTextarea(cardSel, key) {
+  const card = __locate(cardSel, key);
+  if (!card) return null;
+  const inCard = card.querySelector("textarea");
+  if (inCard) return inCard;
+  const all = Array.from(document.querySelectorAll("textarea"))
+    .filter((t) => !t.disabled && !t.readOnly);
+  if (all.length === 1) return all[0];
+  // 여러 개면 우리 카드에 가장 가까운 것을 고른다
+  return all.find((t) => t.closest(cardSel) === card) || null;
+}`;
+
 async function fillTextarea(page, key, text) {
   return page.evaluate(new Function("cardSel", "key", "text", `
     ${LOCATE_FN}
-    const card = __locate(cardSel, key);
-    if (!card) return "카드없음";
-
-    let ta = card.querySelector("textarea");
-    let node = card;
-    for (let i = 0; i < 3 && !ta && node.parentElement; i++) {
-      node = node.parentElement;
-      ta = node.querySelector("textarea");
-    }
+    ${FIND_TA_FN}
+    if (!__locate(cardSel, key)) return "카드없음";
+    const ta = __findTextarea(cardSel, key);
     if (!ta) return "입력창없음";
-    if (ta.disabled || ta.readOnly) return "입력창잠김";
 
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
     ta.scrollIntoView({ block: "center" });
@@ -371,21 +378,14 @@ async function fillTextarea(page, key, text) {
   `), CARD_SEL, key, text);
 }
 
-// 카드(또는 그 주변)에 textarea 가 나타날 때까지 대기 — 편집 모드 진입의 진짜 신호
-async function waitTextarea(page, key, timeoutMs = 12000) {
+// textarea 가 나타날 때까지 대기 — 편집 모드 진입의 진짜 신호
+async function waitTextarea(page, key, timeoutMs = 15000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const ok = await page.evaluate(new Function("cardSel", "key", `
       ${LOCATE_FN}
-      const card = __locate(cardSel, key);
-      if (!card) return false;
-      let node = card;
-      for (let i = 0; i < 4; i++) {
-        if (node.querySelector("textarea")) return true;
-        if (!node.parentElement) break;
-        node = node.parentElement;
-      }
-      return false;
+      ${FIND_TA_FN}
+      return !!__findTextarea(cardSel, key);
     `), CARD_SEL, key);
     if (ok) return true;
     await delay(500);
@@ -393,32 +393,59 @@ async function waitTextarea(page, key, timeoutMs = 12000) {
   return false;
 }
 
+// 실패 원인 파악용 — 화면에 무엇이 있는지 기록
+async function describeState(page, key) {
+  return page.evaluate(new Function("cardSel", "key", `
+    ${LOCATE_FN}
+    const card = __locate(cardSel, key);
+    const all = Array.from(document.querySelectorAll("textarea"));
+    return {
+      카드있음: !!card,
+      전체textarea: all.length,
+      카드내textarea: card ? card.querySelectorAll("textarea").length : 0,
+      카드내버튼: card ? Array.from(card.querySelectorAll("button, [role='button']"))
+        .map((b) => (b.innerText || "").trim().replace(/\\s+/g, " "))
+        .filter((t) => t && t.length < 20) : [],
+    };
+  `), CARD_SEL, key);
+}
+
 async function postReplyViaUI(page, key, replyContent) {
   // 1) AI 초안 패널 열기
   const opened = await clickInCard(page, key, /답글\s*초안|초안을\s*작성/);
   if (opened !== "ok") throw new Error(`AI 초안 버튼 클릭 실패 (${opened})`);
 
-  if (!(await waitButtonInCard(page, key, /이\s*답글\s*수정/, 25000)))
+  if (!(await waitButtonInCard(page, key, /이\s*답글\s*수정|수정\s*취소/, 25000)))
     throw new Error("AI 초안이 준비되지 않았습니다.");
 
   // 2) 편집 모드 진입 — 입력창이 실제로 뜰 때까지 최대 3회 시도
-  let inEdit = false;
+  //    이미 편집 모드면(수정 취소 버튼 존재) 다시 클릭하지 않는다.
+  let inEdit = await waitTextarea(page, key, 2000);
   for (let attempt = 1; attempt <= 3 && !inEdit; attempt++) {
-    const clicked = await clickInCard(page, key, /이\s*답글\s*수정/);
-    if (clicked !== "ok" && attempt === 3) throw new Error(`이 답글 수정 클릭 실패 (${clicked})`);
+    const already = await waitButtonInCard(page, key, /수정\s*취소/, 300);
+    if (!already) {
+      const clicked = await clickInCard(page, key, /이\s*답글\s*수정/);
+      if (clicked !== "ok") console.log(`      ↻ 수정 버튼 클릭 결과: ${clicked}`);
+    }
     inEdit = await waitTextarea(page, key, 8000);
     if (!inEdit) {
       console.log(`      ↻ 편집 모드 재시도 (${attempt}/3)`);
-      await delay(1500);
+      await delay(2000);
     }
   }
-  if (!inEdit) throw new Error("편집 모드로 전환되지 않았습니다.");
+  if (!inEdit) {
+    const state = await describeState(page, key);
+    throw new Error(`편집 모드 전환 실패 — ${JSON.stringify(state)}`);
+  }
 
   await delay(600);
 
   // 3) 텍스트 교체
   const filled = await fillTextarea(page, key, replyContent);
-  if (filled !== "ok") throw new Error(`답글 입력 실패 (${filled})`);
+  if (filled !== "ok") {
+    const state = await describeState(page, key);
+    throw new Error(`답글 입력 실패 (${filled}) — ${JSON.stringify(state)}`);
+  }
   await delay(1000);
 
   // 4) 등록 — 실제 서버 응답으로 성공 여부를 판정한다
