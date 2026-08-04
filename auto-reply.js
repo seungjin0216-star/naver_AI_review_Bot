@@ -44,6 +44,10 @@ export const PROFILE_DIR = process.env.CHROME_PROFILE || path.resolve("chrome-pr
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 const randomDelay = (min, max) => delay(Math.floor((min + Math.random() * (max - min)) * 1000));
 
+// ─── 화면 선택자 (2026-08 스마트플레이스 기준) ────────────────────────────────
+const CARD_SEL   = "li[class*='Review_pui_review']";
+const AI_BTN_SEL = "button[class*='ai_review_show_btn']";
+
 // ─── 실제 네이버 GraphQL 쿼리 (2026-08 브라우저 캡처 기준) ────────────────────
 const CREATE_REPLY_QUERY = `fragment CommonReviewReplyFields on ReviewReply {
   text
@@ -128,64 +132,80 @@ function assertLoggedIn(page) {
   }
 }
 
-// ─── 미답글 리뷰 수집 ─────────────────────────────────────────────────────────
-// 리뷰 목록을 담은 page를 그대로 반환한다. 이후 답글 등록에 재사용해서
-// 같은 페이지 컨텍스트(Referer/Origin)에서 요청이 나가도록 한다.
-async function fetchUnrepliedReviews(browser, businessId) {
+// ─── 리뷰 페이지 열기 ─────────────────────────────────────────────────────────
+async function openReviewPage(browser, businessId) {
   const page = await browser.newPage();
   await hideAutomation(page);
-
-  let captured = null;
-  page.on("response", async (response) => {
-    if (captured) return;
-    const url = response.url();
-    if (!(url.includes("graphql") && url.includes("getReviews"))) return;
-    try {
-      const data = JSON.parse(await response.text());
-      const gql = data?.data?.reviews || data?.data?.getReviews;
-      const items = gql?.items || gql?.reviews || gql?.list;
-      if (Array.isArray(items) && items.length > 0) {
-        captured = items;
-        console.log(`   ✅ 리뷰 캡처: ${items.length}개 (전체 ${gql.totalCount ?? "?"}건)`);
-      }
-    } catch { /* 파싱 실패한 응답은 무시 */ }
-  });
 
   const url = `https://smartplace.naver.com/bizes/place/${businessId}/reviews`;
   console.log(`   이동 중: ${url}`);
   await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-  assertLoggedIn(page);
 
-  // 리뷰 응답이 올 때까지 최대 40초 대기 (4초 고정 대기 대신)
-  for (let i = 0; i < 40 && !captured; i++) await delay(1000);
-
-  if (!captured) {
-    const shot = path.resolve(`debug-${businessId}.png`);
-    try {
-      await page.screenshot({ path: shot, fullPage: false });
-      console.log(`   📸 화면 저장: ${shot}`);
-    } catch { /* 스크린샷 실패는 무시 */ }
-    const bodyText = await page.evaluate(() => document.body?.innerText?.slice(0, 200) || "");
-    console.log(`   ⚠️ 리뷰를 가져오지 못했습니다. (현재 URL: ${page.url()})`);
-    console.log(`   화면 내용: ${bodyText.replace(/\n+/g, " / ")}`);
-    return { page, reviews: [] };
+  // 리뷰 카드가 그려질 때까지 대기 (최대 40초)
+  try {
+    await page.waitForSelector(CARD_SEL, { timeout: 40000 });
+  } catch {
+    await dumpScreen(page, businessId);
+    throw new Error("리뷰 목록이 표시되지 않았습니다.");
   }
+  await delay(2000);
+  await assertLoggedInDeep(page, businessId);
+  return page;
+}
 
-  const reviews = captured
-    .map((r) => ({
-      id:      String(r.id || ""),
-      author:  r.author?.displayName || "익명",
-      rating:  r.rating || 5,
-      content: r.content?.text || "",
-      tags: (Array.isArray(r.keywords) ? r.keywords
-           : Array.isArray(r.tags)     ? r.tags
-           : Array.isArray(r.content?.tags) ? r.content.tags
-           : []).map((k) => k.text || k.name || k),
-      replied: !!(r.hasReply || r.reply),
-    }))
-    .filter((r) => !r.replied && r.id);
+async function dumpScreen(page, tag) {
+  const shot = path.resolve(`debug-${tag}.png`);
+  try {
+    await page.screenshot({ path: shot });
+    console.log(`   📸 화면 저장: ${shot}`);
+  } catch { /* 스크린샷 실패는 무시 */ }
+  const body = await page.evaluate(() => document.body?.innerText?.slice(0, 200) || "");
+  console.log(`   화면 내용: ${body.replace(/\n+/g, " / ")}`);
+}
 
-  return { page, reviews };
+// URL은 그대로 두고 모달만 띄우는 경우가 있어 화면 문구까지 확인한다
+async function assertLoggedInDeep(page, tag) {
+  assertLoggedIn(page);
+  const needLogin = await page.evaluate(() =>
+    (document.body?.innerText || "").includes("네이버 로그인이 필요한")
+  );
+  if (needLogin) {
+    await dumpScreen(page, tag);
+    throw new Error("네이버 로그인이 풀렸습니다. 노트북에서 `node login.js` 를 실행해 다시 로그인해주세요.");
+  }
+}
+
+// ─── 미답글 카드 수집 (AI 초안 버튼이 있는 카드 = 아직 답글 없음) ─────────────
+async function collectPendingCards(page) {
+  return page.evaluate((cardSel, aiBtnSel) => {
+    return Array.from(document.querySelectorAll(cardSel))
+      .map((card, index) => {
+        if (!card.querySelector(aiBtnSel)) return null;
+
+        // 본문이 접혀 있으면 펼치기
+        const more = Array.from(card.querySelectorAll("button, a"))
+          .find((b) => (b.innerText || "").trim() === "더보기");
+        if (more) more.click();
+
+        const raw = card.innerText || "";
+        const textEl = card.querySelector("[data-pui-click-code='text']");
+        const profEl = card.querySelector("[data-pui-click-code='profile']");
+        const ratingMatch = raw.match(/별점\s*([\d.]+)/);
+
+        // 키워드 칩 ("음식이 맛있어요+3 개의 리뷰가..." 형태에서 앞부분만)
+        const chipEl = card.querySelector("[data-pui-click-code='rv.keywordmore']");
+        const chips = chipEl ? (chipEl.previousElementSibling?.innerText || "") : "";
+
+        return {
+          index,
+          author:  ((profEl?.innerText || "").split("리뷰")[0] || "").trim() || "익명",
+          content: (textEl?.innerText || "").trim(),
+          rating:  ratingMatch ? Number(ratingMatch[1]) : 5,
+          tags:    chips.split("\n").map((s) => s.trim()).filter(Boolean).slice(0, 5),
+        };
+      })
+      .filter(Boolean);
+  }, CARD_SEL, AI_BTN_SEL);
 }
 
 // ─── Gemini 답글 생성 ─────────────────────────────────────────────────────────
@@ -250,71 +270,96 @@ async function generateReply(review, greeting, retryCount = 0) {
   return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || null;
 }
 
-// ─── 답글 등록 ────────────────────────────────────────────────────────────────
-// 실제 브라우저가 보내는 요청을 그대로 재현한다.
-//   POST https://smartplace.naver.com/graphql?opName=createReply
-//   { operationName, variables: { input: { text, reviewId, placeId, replyCandidateId? } }, query }
-// replyCandidateId 는 네이버 AI 초안을 쓸 때만 붙는 값으로 보이므로
-// 1차로 생략하고 시도, 거부되면 후보 ID를 조회해 재시도한다.
-async function postReply(page, placeId, reviewId, replyContent) {
-  const result = await page.evaluate(
-    async (createQuery, candidatesQuery, revId, plcId, text) => {
-      const logs = [];
+// ─── 답글 등록 (UI 자동화) ────────────────────────────────────────────────────
+// 사람이 하는 순서 그대로 진행한다.
+//   AI가 답글 초안을 작성했어요! → 이 답글 수정 → 텍스트 교체 → 이대로 등록
+// 요청 헤더는 네이버 앱이 알아서 만들어주므로 API를 직접 흉내 낼 필요가 없다.
 
-      async function gql(opName, body) {
-        const r = await fetch(`https://smartplace.naver.com/graphql?opName=${opName}`, {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json", Accept: "application/json" },
-          body: JSON.stringify(body),
-        });
-        return { status: r.status, text: await r.text() };
-      }
-      const succeeded = (r) => r.status === 200 && !r.text.includes('"errors"');
+// 카드 안에서 특정 텍스트를 가진 버튼 클릭
+async function clickInCard(page, cardIndex, pattern) {
+  return page.evaluate((cardSel, i, src) => {
+    const card = document.querySelectorAll(cardSel)[i];
+    if (!card) return false;
+    const re = new RegExp(src);
+    const btn = Array.from(card.querySelectorAll("button, [role='button'], a"))
+      .find((b) => re.test((b.innerText || "").replace(/\s+/g, " ")));
+    if (!btn) return false;
+    btn.scrollIntoView({ block: "center" });
+    btn.click();
+    return true;
+  }, CARD_SEL, cardIndex, pattern.source);
+}
 
-      // 1차 — replyCandidateId 없이
-      let res = await gql("createReply", {
-        operationName: "createReply",
-        variables: { input: { text, reviewId: revId, placeId: plcId } },
-        query: createQuery,
-      });
-      logs.push(`1차(후보ID 없음): ${res.status} → ${res.text.slice(0, 160)}`);
-      if (succeeded(res)) return { ok: true, method: "no-candidate", logs };
+// 카드 안에 특정 텍스트의 버튼이 나타날 때까지 대기
+async function waitButtonInCard(page, cardIndex, pattern, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const found = await page.evaluate((cardSel, i, src) => {
+      const card = document.querySelectorAll(cardSel)[i];
+      if (!card) return false;
+      const re = new RegExp(src);
+      return Array.from(card.querySelectorAll("button, [role='button'], a"))
+        .some((b) => re.test((b.innerText || "").replace(/\s+/g, " ")));
+    }, CARD_SEL, cardIndex, pattern.source);
+    if (found) return true;
+    await delay(500);
+  }
+  return false;
+}
 
-      // 2차 — 네이버 AI 초안 후보 ID를 받아서 재시도
-      const cand = await gql("GetReviewReplyCandidates", {
-        operationName: "GetReviewReplyCandidates",
-        variables: { id: revId },
-        query: candidatesQuery,
-      });
-      logs.push(`후보 조회: ${cand.status} → ${cand.text.slice(0, 160)}`);
+async function postReplyViaUI(page, cardIndex, replyContent) {
+  // 1) AI 초안 패널 열기
+  if (!(await clickInCard(page, cardIndex, /답글\s*초안|초안을\s*작성/)))
+    throw new Error("AI 초안 버튼을 찾지 못했습니다.");
 
-      let candidateId = null;
-      try {
-        const list = JSON.parse(cand.text)?.data?.reviewReplyCandidates || [];
-        candidateId = (list.find((c) => !c.isOutdated) || list[0])?.id || null;
-      } catch { /* 파싱 실패 시 후보 없음으로 처리 */ }
+  if (!(await waitButtonInCard(page, cardIndex, /이\s*답글\s*수정/, 20000)))
+    throw new Error("AI 초안이 생성되지 않았습니다. (이 답글 수정 버튼 없음)");
 
-      if (!candidateId) {
-        logs.push("후보 ID를 찾지 못했습니다.");
-        return { ok: false, logs };
-      }
+  // 2) 편집 모드 진입
+  if (!(await clickInCard(page, cardIndex, /이\s*답글\s*수정/)))
+    throw new Error("이 답글 수정 클릭 실패");
 
-      res = await gql("createReply", {
-        operationName: "createReply",
-        variables: { input: { text, reviewId: revId, placeId: plcId, replyCandidateId: candidateId } },
-        query: createQuery,
-      });
-      logs.push(`2차(후보ID ${candidateId}): ${res.status} → ${res.text.slice(0, 160)}`);
-      if (succeeded(res)) return { ok: true, method: "with-candidate", logs };
+  // 편집 모드로 바뀌면 '수정 취소' 버튼이 나타난다
+  if (!(await waitButtonInCard(page, cardIndex, /수정\s*취소/, 10000)))
+    throw new Error("편집 모드로 전환되지 않았습니다.");
 
-      return { ok: false, logs };
-    },
-    CREATE_REPLY_QUERY, CANDIDATES_QUERY, reviewId, placeId, replyContent
-  );
+  await delay(800);
 
-  result.logs?.forEach((l) => console.log(`      [REPLY] ${l}`));
-  return result.ok;
+  // 3) 텍스트 교체 (React 상태까지 갱신되도록 네이티브 setter 사용)
+  const filled = await page.evaluate((cardSel, i, text) => {
+    const card = document.querySelectorAll(cardSel)[i];
+    const ta = card?.querySelector("textarea");
+    if (!ta) return false;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    ta.focus();
+    setter.call(ta, "");
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+    setter.call(ta, text);
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+    ta.dispatchEvent(new Event("change", { bubbles: true }));
+    ta.blur();
+    return ta.value === text;
+  }, CARD_SEL, cardIndex, replyContent);
+
+  if (!filled) throw new Error("답글 입력창에 텍스트를 넣지 못했습니다.");
+  await delay(1000);
+
+  // 4) 등록 — 실제 서버 응답으로 성공 여부를 판정한다
+  const responsePromise = page
+    .waitForResponse((r) => r.url().includes("opName=createReply"), { timeout: 25000 })
+    .catch(() => null);
+
+  if (!(await clickInCard(page, cardIndex, /이대로\s*등록/)))
+    throw new Error("이대로 등록 버튼을 찾지 못했습니다.");
+
+  const res = await responsePromise;
+  if (!res) throw new Error("등록 요청이 전송되지 않았습니다.");
+
+  const body = await res.text().catch(() => "");
+  if (res.status() !== 200 || body.includes('"errors"')) {
+    throw new Error(`등록 거부됨 (${res.status()}) ${body.slice(0, 120)}`);
+  }
+  return true;
 }
 
 // ─── 메인 ─────────────────────────────────────────────────────────────────────
@@ -338,37 +383,44 @@ async function main() {
 
       let page = null;
       try {
-        const result = await fetchUnrepliedReviews(browser, branch.businessId);
-        page = result.page;
-        const reviews = result.reviews.slice(0, MAX_PER_RUN);
+        page = await openReviewPage(browser, branch.businessId);
 
-        if (reviews.length === 0) {
-          console.log("   미답글 없음 ✨");
-          continue;
-        }
-        console.log(`   미답글 ${result.reviews.length}건 중 ${reviews.length}건 처리`);
+        for (let n = 0; n < MAX_PER_RUN; n++) {
+          // 등록할 때마다 화면이 다시 그려지므로 매번 새로 수집한다
+          const pending = await collectPendingCards(page);
+          if (pending.length === 0) {
+            console.log(n === 0 ? "   미답글 없음 ✨" : "   남은 미답글 없음 ✨");
+            break;
+          }
+          if (n === 0) console.log(`   화면에 미답글 ${pending.length}건 — 최대 ${MAX_PER_RUN}건 처리`);
 
-        for (const review of reviews) {
+          const review = pending[0];
+          console.log(`   [${n + 1}/${MAX_PER_RUN}] ${review.author} (${review.rating}점) — ${review.content.slice(0, 30)}...`);
+
           try {
             const reply = await generateReply(review, branch.greeting);
             if (!reply) throw new Error("답글 생성 실패 (빈 응답)");
 
-            const posted = await postReply(page, branch.placeId, review.id, reply);
-            if (!posted) throw new Error("답글 등록 실패");
+            await postReplyViaUI(page, review.index, reply);
 
-            console.log(`   ✅ [${review.author}] 완료`);
+            console.log(`   ✅ [${review.author}] 등록 완료`);
             report.success++;
             report.details.push({ branch: branch.name, author: review.author, status: "✅" });
           } catch (e) {
             console.error(`   ❌ [${review.author}] ${e.message}`);
+            await dumpScreen(page, `${branch.businessId}-${n}`);
             report.fail++;
             report.details.push({ branch: branch.name, author: review.author, status: "❌", error: e.message });
           }
-          // 사람처럼 보이도록 20~60초 랜덤 간격
+
+          // 사람처럼 보이도록 20~60초 랜덤 간격 후 새로고침
           await randomDelay(20, 60);
+          await page.reload({ waitUntil: "domcontentloaded" });
+          await page.waitForSelector(CARD_SEL, { timeout: 40000 }).catch(() => {});
+          await delay(2000);
         }
       } catch (e) {
-        console.error(`   리뷰 수집 실패: ${e.message}`);
+        console.error(`   지점 처리 실패: ${e.message}`);
         report.skipped++;
       } finally {
         if (page) await page.close().catch(() => {});
