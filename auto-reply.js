@@ -30,7 +30,7 @@ try {
   }
 } catch { /* .env 없으면 시스템 환경변수 사용 */ }
 
-const BRANCHES = [
+export const BRANCHES = [
   { name: "백석직영점", businessId: "8250200",  placeId: "1757412660", greeting: "장수한우곱창 백석직영점" },
   { name: "마곡발산점", businessId: "11542564", placeId: "2073101570", greeting: "장수한우곱창 마곡발산점" },
 ];
@@ -133,7 +133,7 @@ function assertLoggedIn(page) {
 }
 
 // ─── 리뷰 페이지 열기 ─────────────────────────────────────────────────────────
-async function openReviewPage(browser, businessId) {
+export async function openReviewPage(browser, businessId) {
   const page = await browser.newPage();
   await hideAutomation(page);
 
@@ -176,7 +176,7 @@ async function assertLoggedInDeep(page, tag) {
 }
 
 // ─── 미답글 카드 수집 (AI 초안 버튼이 있는 카드 = 아직 답글 없음) ─────────────
-async function collectPendingCards(page) {
+export async function collectPendingCards(page) {
   return page.evaluate((cardSel, aiBtnSel) => {
     return Array.from(document.querySelectorAll(cardSel))
       .map((card, index) => {
@@ -189,7 +189,9 @@ async function collectPendingCards(page) {
 
         const raw = card.innerText || "";
         const textEl = card.querySelector("[data-pui-click-code='text']");
-        const profEl = card.querySelector("[data-pui-click-code='profile']");
+        // 프로필 요소가 2개(이미지·이름)라서 텍스트가 있는 쪽을 고른다
+        const profEl = Array.from(card.querySelectorAll("[data-pui-click-code='profile']"))
+          .find((el) => (el.innerText || "").trim().length > 0);
         const ratingMatch = raw.match(/별점\s*([\d.]+)/);
 
         // 키워드 칩 ("음식이 맛있어요+3 개의 리뷰가..." 형태에서 앞부분만)
@@ -210,35 +212,44 @@ async function collectPendingCards(page) {
 
 // ─── Gemini 답글 생성 ─────────────────────────────────────────────────────────
 function buildPrompt(review, greeting) {
-  return `당신은 친절하고 활기찬 '${greeting}' 사장님입니다.
+  return `당신은 친절하고 활기찬 '${greeting}' 사장님입니다. 손님 리뷰에 답글을 답니다.
 
-[답변 구조]
-- 도입: "안녕하세요 ${greeting}입니다 🐮✨" 로 고정 시작
-- 본문: 고객 리뷰 내용을 따옴표 없이 문장 속에 자연스럽게 녹여서 언급
-  예) "너무 맛있어요"라고 하셨을 때(X) → 너무 맛있다고 말씀해 주셔서(O)
-- 가치 강조: "당일 도축된 신선한 최상급 한우", "잡내 없는 고소한 풍미" 문맥에 맞게 포함
-- 마무리: 재방문 기대 + 담백한 감사 인사 (💖 😋 ✨ 중 1~2개 활용)
+[가장 중요한 원칙 — 리뷰를 되풀이하지 말 것]
+손님이 쓴 내용을 하나하나 다시 읊는 답글은 성의 없어 보입니다.
+- 리뷰에서 **가장 인상적인 포인트 딱 1~2가지만** 골라 언급하세요. 나머지는 과감히 버립니다.
+- 손님이 쓴 표현을 그대로 옮기지 말고, **사장님의 말로 바꿔서** 짧게 받아주세요.
+- 손님이 언급한 메뉴·상황을 순서대로 나열하는 것은 금지입니다.
 
-[상황별 대응]
-- 맛/품질 언급 → 신선함과 불쇼를 통한 잡내 제거 강조
-- 가족/아이 동반 → 부드러운 식감, 아기 의자 완비 강조
-- 사이드/주류 언급 → 메인과의 환상적 궁합, 중독성 강조
-- 검색/지인추천 → 맛집 타이틀 자부심과 신뢰 보답 강조
+나쁜 예) 곱창도 맛있고 대창도 좋고 볶음밥까지 완벽했다고 해주시고 직원분들도 친절했다고 하시니…
+좋은 예) 마무리 볶음밥까지 남김없이 즐겨주셨다니 그것만으로 배부릅니다.
 
-[금지사항]
-- 리뷰 인용 시 따옴표("") 절대 금지
-- 예약 문의, 서비스 약속, 링크 안내 등 홍보 문구 금지
-- 별점/평점 언급 금지
-- 200~250자 이내
+[구성]
+1. 도입: "안녕하세요 ${greeting}입니다 🐮✨" 로 고정 시작
+2. 본문: 위 원칙대로 핵심 1~2가지에만 반응 (2~3문장)
+3. 가치: 문맥에 맞을 때만 자연스럽게 한 번 — 당일 도축한 신선한 한우, 불쇼로 잡내를 잡은 고소한 풍미
+4. 마무리: 재방문 기대 + 담백한 감사 (1문장)
 
-[리뷰 정보]
-별점: ${review.rating}점 / 태그: ${review.tags.join(", ") || "없음"}
-내용: ${review.content || "(사진/영수증 리뷰)"}
+[상황별 힌트] — 해당될 때만 사용
+- 맛/품질 → 신선함, 잡내 없는 풍미
+- 가족/아이 → 부드러운 식감, 아기 의자 완비
+- 사이드/주류 → 메인과의 궁합
+- 검색/지인추천 → 믿고 찾아주신 데 대한 보답
 
-답글만 출력하세요.`;
+[금지]
+- 따옴표("")로 리뷰 인용 금지
+- 예약 문의, 서비스 약속, 링크 등 홍보 문구 금지
+- 별점·평점 언급 금지
+- 이모지는 전체에서 2~3개까지 (💖 😋 ✨ 🐮 중)
+- 180~230자
+
+[리뷰]
+별점 ${review.rating}점 / 키워드: ${review.tags.join(", ") || "없음"}
+${review.content || "(사진/영수증만 있는 리뷰)"}
+
+답글 본문만 출력하세요.`;
 }
 
-async function generateReply(review, greeting, retryCount = 0) {
+export async function generateReply(review, greeting, retryCount = 0) {
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
     {
