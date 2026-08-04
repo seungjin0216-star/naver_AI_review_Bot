@@ -34,7 +34,15 @@ async function sendSolapi(text) {
 
   const message = { to, from, text: text.slice(0, 900) };
   const pfId = env("SOLAPI_PFID");
-  if (pfId) message.kakaoOptions = { pfId, disableSms: false }; // 친구톡, 실패 시 문자 대체
+
+  if (pfId) {
+    // 유형을 지정하지 않으면 브랜드 메시지(BMS, 고가)로 나갈 수 있으므로 반드시 못 박는다.
+    //   CTA = 친구톡(14원) / LMS = 장문문자(29원) / SMS = 단문문자(13원)
+    message.type = env("SOLAPI_TYPE") || "CTA";
+    message.kakaoOptions = { pfId, disableSms: false }; // 친구톡 실패 시 문자로 대체 발송
+  } else if (env("SOLAPI_TYPE")) {
+    message.type = env("SOLAPI_TYPE");
+  }
 
   const res = await fetch("https://api.solapi.com/messages/v4/send", {
     method: "POST",
@@ -50,7 +58,10 @@ async function sendSolapi(text) {
   if (!res.ok || (code && code !== "2000")) {
     throw new Error(`솔라피 ${res.status} ${code || ""} ${data.statusMessage || data.errorMessage || JSON.stringify(data).slice(0, 150)}`);
   }
-  return pfId ? "솔라피(친구톡)" : "솔라피(문자)";
+  // 실제로 어떤 유형/요금으로 나갔는지 로그에 남긴다 (요금 사고 방지)
+  const sent = data.type || message.type || "자동";
+  const price = data.balance !== undefined ? "" : "";
+  return `솔라피(${sent})${price}`;
 }
 
 // ─── 카카오 나에게 보내기 (대체 수단) ─────────────────────────────────────────
