@@ -198,13 +198,16 @@ export async function collectPendingCards(page) {
         const chipEl = card.querySelector("[data-pui-click-code='rv.keywordmore']");
         const chips = chipEl ? (chipEl.previousElementSibling?.innerText || "") : "";
 
-        return {
-          index,
-          author:  ((profEl?.innerText || "").split("리뷰")[0] || "").trim() || "익명",
-          content: (textEl?.innerText || "").trim(),
-          rating:  ratingMatch ? Number(ratingMatch[1]) : 5,
-          tags:    chips.split("\n").map((s) => s.trim()).filter(Boolean).slice(0, 5),
-        };
+        const author  = ((profEl?.innerText || "").split("리뷰")[0] || "").trim() || "익명";
+        const content = (textEl?.innerText || "").trim();
+
+        // 카드를 다시 찾기 위한 열쇠.
+        // 2단 컬럼 레이아웃이라 카드 순서(index)가 수시로 바뀌므로 내용으로 식별한다.
+        const squashed = content.replace(/\s+/g, "");
+        const key = squashed.length >= 8 ? squashed.slice(0, 25) : `작성자:${author}`;
+
+        return { index, key, author, content, rating: ratingMatch ? Number(ratingMatch[1]) : 5,
+                 tags: chips.split("\n").map((s) => s.trim()).filter(Boolean).slice(0, 5) };
       })
       .filter(Boolean);
   }, CARD_SEL, AI_BTN_SEL);
@@ -286,73 +289,136 @@ export async function generateReply(review, greeting, retryCount = 0) {
 //   AI가 답글 초안을 작성했어요! → 이 답글 수정 → 텍스트 교체 → 이대로 등록
 // 요청 헤더는 네이버 앱이 알아서 만들어주므로 API를 직접 흉내 낼 필요가 없다.
 
+// 브라우저 안에서 실행될 카드 탐색 함수 (문자열로 주입)
+// 2단 컬럼 레이아웃이라 카드 순서가 수시로 바뀌므로 매번 내용으로 다시 찾는다.
+const LOCATE_FN = `
+function __locate(cardSel, key) {
+  const cards = Array.from(document.querySelectorAll(cardSel));
+  if (key.startsWith("작성자:")) {
+    const name = key.slice(4);
+    return cards.find((c) => {
+      const p = Array.from(c.querySelectorAll("[data-pui-click-code='profile']"))
+        .find((e) => (e.innerText || "").trim());
+      return ((p?.innerText || "").split("리뷰")[0] || "").trim() === name;
+    }) || null;
+  }
+  return cards.find((c) => {
+    const t = c.querySelector("[data-pui-click-code='text']");
+    return t && (t.innerText || "").replace(/\\s+/g, "").includes(key);
+  }) || null;
+}`;
+
 // 카드 안에서 특정 텍스트를 가진 버튼 클릭
-async function clickInCard(page, cardIndex, pattern) {
-  return page.evaluate((cardSel, i, src) => {
-    const card = document.querySelectorAll(cardSel)[i];
-    if (!card) return false;
+async function clickInCard(page, key, pattern) {
+  return page.evaluate(new Function("cardSel", "key", "src", `
+    ${LOCATE_FN}
+    const card = __locate(cardSel, key);
+    if (!card) return "카드없음";
     const re = new RegExp(src);
     const btn = Array.from(card.querySelectorAll("button, [role='button'], a"))
-      .find((b) => re.test((b.innerText || "").replace(/\s+/g, " ")));
-    if (!btn) return false;
+      .find((b) => re.test((b.innerText || "").replace(/\\s+/g, " ")));
+    if (!btn) return "버튼없음";
     btn.scrollIntoView({ block: "center" });
     btn.click();
-    return true;
-  }, CARD_SEL, cardIndex, pattern.source);
+    return "ok";
+  `), CARD_SEL, key, pattern.source);
 }
 
 // 카드 안에 특정 텍스트의 버튼이 나타날 때까지 대기
-async function waitButtonInCard(page, cardIndex, pattern, timeoutMs = 15000) {
+async function waitButtonInCard(page, key, pattern, timeoutMs = 15000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const found = await page.evaluate((cardSel, i, src) => {
-      const card = document.querySelectorAll(cardSel)[i];
+    const found = await page.evaluate(new Function("cardSel", "key", "src", `
+      ${LOCATE_FN}
+      const card = __locate(cardSel, key);
       if (!card) return false;
       const re = new RegExp(src);
       return Array.from(card.querySelectorAll("button, [role='button'], a"))
-        .some((b) => re.test((b.innerText || "").replace(/\s+/g, " ")));
-    }, CARD_SEL, cardIndex, pattern.source);
+        .some((b) => re.test((b.innerText || "").replace(/\\s+/g, " ")));
+    `), CARD_SEL, key, pattern.source);
     if (found) return true;
     await delay(500);
   }
   return false;
 }
 
-async function postReplyViaUI(page, cardIndex, replyContent) {
-  // 1) AI 초안 패널 열기
-  if (!(await clickInCard(page, cardIndex, /답글\s*초안|초안을\s*작성/)))
-    throw new Error("AI 초안 버튼을 찾지 못했습니다.");
+// 카드에 딸린 textarea 를 찾아 텍스트를 채운다.
+// 카드 안에 없으면 부모 쪽으로 범위를 넓혀 가장 가까운 것을 쓴다.
+async function fillTextarea(page, key, text) {
+  return page.evaluate(new Function("cardSel", "key", "text", `
+    ${LOCATE_FN}
+    const card = __locate(cardSel, key);
+    if (!card) return "카드없음";
 
-  if (!(await waitButtonInCard(page, cardIndex, /이\s*답글\s*수정/, 20000)))
-    throw new Error("AI 초안이 생성되지 않았습니다. (이 답글 수정 버튼 없음)");
+    let ta = card.querySelector("textarea");
+    let node = card;
+    for (let i = 0; i < 3 && !ta && node.parentElement; i++) {
+      node = node.parentElement;
+      ta = node.querySelector("textarea");
+    }
+    if (!ta) return "입력창없음";
+    if (ta.disabled || ta.readOnly) return "입력창잠김";
 
-  // 2) 편집 모드 진입
-  if (!(await clickInCard(page, cardIndex, /이\s*답글\s*수정/)))
-    throw new Error("이 답글 수정 클릭 실패");
-
-  // 편집 모드로 바뀌면 '수정 취소' 버튼이 나타난다
-  if (!(await waitButtonInCard(page, cardIndex, /수정\s*취소/, 10000)))
-    throw new Error("편집 모드로 전환되지 않았습니다.");
-
-  await delay(800);
-
-  // 3) 텍스트 교체 (React 상태까지 갱신되도록 네이티브 setter 사용)
-  const filled = await page.evaluate((cardSel, i, text) => {
-    const card = document.querySelectorAll(cardSel)[i];
-    const ta = card?.querySelector("textarea");
-    if (!ta) return false;
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+    ta.scrollIntoView({ block: "center" });
     ta.focus();
     setter.call(ta, "");
     ta.dispatchEvent(new Event("input", { bubbles: true }));
     setter.call(ta, text);
     ta.dispatchEvent(new Event("input", { bubbles: true }));
     ta.dispatchEvent(new Event("change", { bubbles: true }));
-    ta.blur();
-    return ta.value === text;
-  }, CARD_SEL, cardIndex, replyContent);
+    return ta.value === text ? "ok" : "반영안됨";
+  `), CARD_SEL, key, text);
+}
 
-  if (!filled) throw new Error("답글 입력창에 텍스트를 넣지 못했습니다.");
+// 카드(또는 그 주변)에 textarea 가 나타날 때까지 대기 — 편집 모드 진입의 진짜 신호
+async function waitTextarea(page, key, timeoutMs = 12000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const ok = await page.evaluate(new Function("cardSel", "key", `
+      ${LOCATE_FN}
+      const card = __locate(cardSel, key);
+      if (!card) return false;
+      let node = card;
+      for (let i = 0; i < 4; i++) {
+        if (node.querySelector("textarea")) return true;
+        if (!node.parentElement) break;
+        node = node.parentElement;
+      }
+      return false;
+    `), CARD_SEL, key);
+    if (ok) return true;
+    await delay(500);
+  }
+  return false;
+}
+
+async function postReplyViaUI(page, key, replyContent) {
+  // 1) AI 초안 패널 열기
+  const opened = await clickInCard(page, key, /답글\s*초안|초안을\s*작성/);
+  if (opened !== "ok") throw new Error(`AI 초안 버튼 클릭 실패 (${opened})`);
+
+  if (!(await waitButtonInCard(page, key, /이\s*답글\s*수정/, 25000)))
+    throw new Error("AI 초안이 준비되지 않았습니다.");
+
+  // 2) 편집 모드 진입 — 입력창이 실제로 뜰 때까지 최대 3회 시도
+  let inEdit = false;
+  for (let attempt = 1; attempt <= 3 && !inEdit; attempt++) {
+    const clicked = await clickInCard(page, key, /이\s*답글\s*수정/);
+    if (clicked !== "ok" && attempt === 3) throw new Error(`이 답글 수정 클릭 실패 (${clicked})`);
+    inEdit = await waitTextarea(page, key, 8000);
+    if (!inEdit) {
+      console.log(`      ↻ 편집 모드 재시도 (${attempt}/3)`);
+      await delay(1500);
+    }
+  }
+  if (!inEdit) throw new Error("편집 모드로 전환되지 않았습니다.");
+
+  await delay(600);
+
+  // 3) 텍스트 교체
+  const filled = await fillTextarea(page, key, replyContent);
+  if (filled !== "ok") throw new Error(`답글 입력 실패 (${filled})`);
   await delay(1000);
 
   // 4) 등록 — 실제 서버 응답으로 성공 여부를 판정한다
@@ -360,8 +426,8 @@ async function postReplyViaUI(page, cardIndex, replyContent) {
     .waitForResponse((r) => r.url().includes("opName=createReply"), { timeout: 25000 })
     .catch(() => null);
 
-  if (!(await clickInCard(page, cardIndex, /이대로\s*등록/)))
-    throw new Error("이대로 등록 버튼을 찾지 못했습니다.");
+  const submitted = await clickInCard(page, key, /이대로\s*등록/);
+  if (submitted !== "ok") throw new Error(`등록 버튼 클릭 실패 (${submitted})`);
 
   const res = await responsePromise;
   if (!res) throw new Error("등록 요청이 전송되지 않았습니다.");
@@ -395,15 +461,20 @@ async function main() {
       let page = null;
       try {
         page = await openReviewPage(browser, branch.businessId);
+        const failedKeys = new Set(); // 이번 실행에서 실패한 리뷰는 건너뛴다
 
         for (let n = 0; n < MAX_PER_RUN; n++) {
           // 등록할 때마다 화면이 다시 그려지므로 매번 새로 수집한다
-          const pending = await collectPendingCards(page);
+          const all = await collectPendingCards(page);
+          const pending = all.filter((r) => !failedKeys.has(r.key));
+
           if (pending.length === 0) {
-            console.log(n === 0 ? "   미답글 없음 ✨" : "   남은 미답글 없음 ✨");
+            if (n === 0) console.log("   미답글 없음 ✨");
+            else if (failedKeys.size) console.log(`   처리 가능한 미답글 없음 (건너뛴 ${failedKeys.size}건 제외)`);
+            else console.log("   남은 미답글 없음 ✨");
             break;
           }
-          if (n === 0) console.log(`   화면에 미답글 ${pending.length}건 — 최대 ${MAX_PER_RUN}건 처리`);
+          if (n === 0) console.log(`   화면에 미답글 ${all.length}건 — 최대 ${MAX_PER_RUN}건 처리`);
 
           const review = pending[0];
           console.log(`   [${n + 1}/${MAX_PER_RUN}] ${review.author} (${review.rating}점) — ${review.content.slice(0, 30)}...`);
@@ -412,13 +483,14 @@ async function main() {
             const reply = await generateReply(review, branch.greeting);
             if (!reply) throw new Error("답글 생성 실패 (빈 응답)");
 
-            await postReplyViaUI(page, review.index, reply);
+            await postReplyViaUI(page, review.key, reply);
 
             console.log(`   ✅ [${review.author}] 등록 완료`);
             report.success++;
             report.details.push({ branch: branch.name, author: review.author, status: "✅" });
           } catch (e) {
-            console.error(`   ❌ [${review.author}] ${e.message}`);
+            console.error(`   ❌ [${review.author}] ${e.message} → 건너뜁니다`);
+            failedKeys.add(review.key); // 같은 리뷰를 붙잡고 반복하지 않는다
             await dumpScreen(page, `${branch.businessId}-${n}`);
             report.fail++;
             report.details.push({ branch: branch.name, author: review.author, status: "❌", error: e.message });
