@@ -20,6 +20,13 @@ try { process.loadEnvFile(); } catch { /* 시스템 환경변수 사용 */ }
 const env = (k) => (process.env[k] || "").trim();
 const onlyDigits = (s) => s.replace(/\D/g, "");
 
+/** 문자 요금 기준 바이트 수 (한글·이모지는 2바이트로 계산) */
+export function byteLength(s) {
+  let n = 0;
+  for (const ch of s) n += ch.charCodeAt(0) > 0x7f ? 2 : 1;
+  return n;
+}
+
 // ─── 솔라피 ───────────────────────────────────────────────────────────────────
 async function sendSolapi(text) {
   const key = env("SOLAPI_API_KEY");
@@ -32,17 +39,15 @@ async function sendSolapi(text) {
   const salt = crypto.randomBytes(32).toString("hex");
   const signature = crypto.createHmac("sha256", secret).update(date + salt).digest("hex");
 
-  const message = { to, from, text: text.slice(0, 900) };
-  const pfId = env("SOLAPI_PFID");
+  const body = text.slice(0, 900);
 
-  if (pfId) {
-    // 유형을 지정하지 않으면 브랜드 메시지(BMS, 고가)로 나갈 수 있으므로 반드시 못 박는다.
-    //   CTA = 친구톡(14원) / LMS = 장문문자(29원) / SMS = 단문문자(13원)
-    message.type = env("SOLAPI_TYPE") || "CTA";
-    message.kakaoOptions = { pfId, disableSms: false }; // 친구톡 실패 시 문자로 대체 발송
-  } else if (env("SOLAPI_TYPE")) {
-    message.type = env("SOLAPI_TYPE");
-  }
+  // 친구톡은 2025-12-31 종료되어 요청해도 브랜드메시지(BMS, 고가)로 대체 발송된다.
+  // 따라서 기본은 문자로 보내고, 길이에 따라 SMS(13원)/LMS(29원)를 자동으로 고른다.
+  //   SMS 한도 = 90바이트 (한글 2바이트)
+  const type = env("SOLAPI_TYPE") || (byteLength(body) <= 90 ? "SMS" : "LMS");
+
+  const message = { to, from, text: body, type };
+  if (type === "LMS" || type === "MMS") message.subject = "리뷰봇";
 
   const res = await fetch("https://api.solapi.com/messages/v4/send", {
     method: "POST",
@@ -58,10 +63,8 @@ async function sendSolapi(text) {
   if (!res.ok || (code && code !== "2000")) {
     throw new Error(`솔라피 ${res.status} ${code || ""} ${data.statusMessage || data.errorMessage || JSON.stringify(data).slice(0, 150)}`);
   }
-  // 실제로 어떤 유형/요금으로 나갔는지 로그에 남긴다 (요금 사고 방지)
-  const sent = data.type || message.type || "자동";
-  const price = data.balance !== undefined ? "" : "";
-  return `솔라피(${sent})${price}`;
+  // 실제로 어떤 유형으로 나갔는지 로그에 남긴다 (요금 사고 방지)
+  return `솔라피 ${data.type || type} · ${byteLength(body)}바이트`;
 }
 
 // ─── 카카오 나에게 보내기 (대체 수단) ─────────────────────────────────────────

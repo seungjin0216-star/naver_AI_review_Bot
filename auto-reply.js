@@ -580,31 +580,46 @@ async function main() {
   if (report.success === 0 && report.fail > 0) process.exit(1);
 }
 
-// ─── 카톡 리포트 ──────────────────────────────────────────────────────────────
+// ─── 문자 리포트 ──────────────────────────────────────────────────────────────
+// 문자 요금은 90바이트까지 SMS(13원), 넘으면 LMS(29원)이다.
+// 평소(정상)에는 90바이트 안에 들어가도록 짧게, 문제가 생겼을 때만 길게 보낸다.
 async function sendReport(report, startTime, fatal = null) {
-  const byBranch = {};
-  for (const d of report.details) {
-    byBranch[d.branch] ??= { ok: 0, ng: 0 };
-    d.status === "✅" ? byBranch[d.branch].ok++ : byBranch[d.branch].ng++;
-  }
+  // "2026. 8. 5. 오전 9:02:11" → "8/5 09:02"
+  const t = new Date().toLocaleString("ko-KR", {
+    timeZone: "Asia/Seoul", month: "numeric", day: "numeric",
+    hour: "2-digit", minute: "2-digit", hour12: false,
+  }).replace(/\.\s*/g, "/").replace(/\/\s/, " ").replace(/\/$/, "");
 
   let msg;
+
   if (fatal) {
-    msg = `🚨 리뷰봇 오류\n${startTime}\n\n${fatal}\n\n노트북에서 확인이 필요합니다.`;
+    msg = `[리뷰봇 오류] ${t}\n${fatal}\n노트북 확인이 필요합니다.`;
   } else if (report.needLogin) {
-    msg = `🔐 네이버 로그인 필요\n${startTime}\n\n노트북에서 아래를 실행해주세요.\ncd C:\\ai-staff\\naver_AI_review_Bot\nnode login.js`;
+    msg = `[리뷰봇] ${t} 네이버 로그인 만료\n노트북에서 실행: node login.js`;
   } else if (report.success === 0 && report.fail === 0) {
-    msg = `🐮 리뷰봇 실행 완료\n${startTime}\n\n새로 답글 달 리뷰가 없습니다 ✨`;
+    msg = `[리뷰봇] ${t} 새 리뷰 없음`;
   } else {
-    const lines = Object.entries(byBranch)
-      .map(([b, v]) => `· ${b}  성공 ${v.ok}건${v.ng ? ` / 실패 ${v.ng}건` : ""}`);
-    msg = `🐮 리뷰봇 실행 완료\n${startTime}\n\n${lines.join("\n")}\n\n합계 ✅ ${report.success}건`
-        + (report.fail ? ` / ❌ ${report.fail}건` : "");
+    // 지점명 축약: 백석직영점 → 백석 / 마곡발산점 → 마곡
+    const parts = [];
+    const byBranch = {};
+    for (const d of report.details) {
+      byBranch[d.branch] ??= { ok: 0, ng: 0 };
+      d.status === "✅" ? byBranch[d.branch].ok++ : byBranch[d.branch].ng++;
+    }
+    for (const [name, v] of Object.entries(byBranch)) {
+      parts.push(`${name.slice(0, 2)} ${v.ok}${v.ng ? `/실패${v.ng}` : ""}`);
+    }
+    msg = `[리뷰봇] ${t} ${parts.join(" ")}`;
+
+    // 실패가 있을 때만 사유를 덧붙인다 (이 경우 LMS로 넘어가도 괜찮다)
     if (report.fail) {
-      const reasons = [...new Set(report.details.filter((d) => d.error).map((d) => d.error.split(" —")[0]))];
-      msg += `\n\n실패 사유\n${reasons.slice(0, 3).map((r) => `· ${r}`).join("\n")}`;
+      const reasons = [...new Set(
+        report.details.filter((d) => d.error).map((d) => d.error.split(" —")[0].slice(0, 40))
+      )];
+      msg += `\n사유: ${reasons.slice(0, 2).join(" / ")}`;
     }
   }
+
   await sendNotify(msg);
 }
 
