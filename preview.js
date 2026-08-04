@@ -24,8 +24,8 @@ try {
 
     let page = null;
     try {
-      page = await openReviewPage(browser, branch.businessId);
-      const pending = (await collectPendingCards(page)).slice(0, COUNT);
+      page = await openReviewPage(browser, branch);
+      const pending = (await collectPendingCards(page)).cards.slice(0, COUNT);
 
       if (pending.length === 0) {
         console.log("   미답글 없음");

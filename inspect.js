@@ -5,10 +5,11 @@
  * 답글 등록 UI 자동화를 위해 실제 화면 구조를 확인한다.
  */
 import path from "node:path";
-import { launchBrowser, hideAutomation } from "./auto-reply.js";
+import { launchBrowser, hideAutomation, BRANCHES, reviewUrl } from "./auto-reply.js";
 
 const BUSINESS_ID = process.argv[2] || "8250200";
-const URL = `https://smartplace.naver.com/bizes/place/${BUSINESS_ID}/reviews`;
+const branch = BRANCHES.find((b) => b.businessId === BUSINESS_ID) || BRANCHES[0];
+const URL = reviewUrl(branch);
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 

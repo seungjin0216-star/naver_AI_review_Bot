@@ -31,9 +31,15 @@ try {
 } catch { /* .env 없으면 시스템 환경변수 사용 */ }
 
 export const BRANCHES = [
-  { name: "백석직영점", businessId: "8250200",  placeId: "1757412660", greeting: "장수한우곱창 백석직영점" },
-  { name: "마곡발산점", businessId: "11542564", placeId: "2073101570", greeting: "장수한우곱창 마곡발산점" },
+  { name: "백석직영점", businessId: "8250200",  placeId: "1757412660", bookingBusinessId: "898097",  greeting: "장수한우곱창 백석직영점" },
+  { name: "마곡발산점", businessId: "11542564", placeId: "2073101570", bookingBusinessId: "1482386", greeting: "장수한우곱창 마곡발산점" },
 ];
+
+// 답글 미등록 리뷰만 보이는 주소 (hasReply=false)
+export function reviewUrl(branch) {
+  return `https://new.smartplace.naver.com/bizes/place/${branch.businessId}/reviews`
+       + `?bookingBusinessId=${branch.bookingBusinessId}&hasReply=false&menu=visitor`;
+}
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
@@ -133,11 +139,11 @@ function assertLoggedIn(page) {
 }
 
 // ─── 리뷰 페이지 열기 ─────────────────────────────────────────────────────────
-export async function openReviewPage(browser, businessId) {
+export async function openReviewPage(browser, branch) {
   const page = await browser.newPage();
   await hideAutomation(page);
 
-  const url = `https://smartplace.naver.com/bizes/place/${businessId}/reviews`;
+  const url = reviewUrl(branch);
   console.log(`   이동 중: ${url}`);
   await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
 
@@ -145,11 +151,12 @@ export async function openReviewPage(browser, businessId) {
   try {
     await page.waitForSelector(CARD_SEL, { timeout: 40000 });
   } catch {
-    await dumpScreen(page, businessId);
-    throw new Error("리뷰 목록이 표시되지 않았습니다.");
+    await assertLoggedInDeep(page, branch.businessId);
+    console.log("   미답글이 한 건도 없습니다 ✨");
+    return page; // 카드가 0건일 수도 있으므로 오류로 처리하지 않는다
   }
   await delay(2000);
-  await assertLoggedInDeep(page, businessId);
+  await assertLoggedInDeep(page, branch.businessId);
   return page;
 }
 
@@ -178,7 +185,8 @@ async function assertLoggedInDeep(page, tag) {
 // ─── 미답글 카드 수집 (AI 초안 버튼이 있는 카드 = 아직 답글 없음) ─────────────
 export async function collectPendingCards(page) {
   return page.evaluate((cardSel, aiBtnSel) => {
-    return Array.from(document.querySelectorAll(cardSel))
+    const allCards = Array.from(document.querySelectorAll(cardSel));
+    const cards = allCards
       .map((card, index) => {
         if (!card.querySelector(aiBtnSel)) return null;
 
@@ -210,6 +218,7 @@ export async function collectPendingCards(page) {
                  tags: chips.split("\n").map((s) => s.trim()).filter(Boolean).slice(0, 5) };
       })
       .filter(Boolean);
+    return { total: allCards.length, cards };
   }, CARD_SEL, AI_BTN_SEL);
 }
 
@@ -501,21 +510,22 @@ async function main() {
 
       let page = null;
       try {
-        page = await openReviewPage(browser, branch.businessId);
+        page = await openReviewPage(browser, branch);
         const failedKeys = new Set(); // 이번 실행에서 실패한 리뷰는 건너뛴다
 
         for (let n = 0; n < MAX_PER_RUN; n++) {
           // 등록할 때마다 화면이 다시 그려지므로 매번 새로 수집한다
-          const all = await collectPendingCards(page);
-          const pending = all.filter((r) => !failedKeys.has(r.key));
+          const { total, cards } = await collectPendingCards(page);
+          const pending = cards.filter((r) => !failedKeys.has(r.key));
 
           if (pending.length === 0) {
-            if (n === 0) console.log("   미답글 없음 ✨");
+            if (n === 0 && total === 0) console.log("   미답글 없음 ✨");
+            else if (n === 0) console.log(`   미답글 ${total}건이 있으나 AI 초안을 쓸 수 있는 리뷰가 없습니다.`);
             else if (failedKeys.size) console.log(`   처리 가능한 미답글 없음 (건너뛴 ${failedKeys.size}건 제외)`);
             else console.log("   남은 미답글 없음 ✨");
             break;
           }
-          if (n === 0) console.log(`   화면에 미답글 ${all.length}건 — 최대 ${MAX_PER_RUN}건 처리`);
+          if (n === 0) console.log(`   미답글 ${total}건 (AI 초안 가능 ${cards.length}건) — 최대 ${MAX_PER_RUN}건 처리`);
 
           const review = pending[0];
           console.log(`   [${n + 1}/${MAX_PER_RUN}] ${review.author} (${review.rating}점) — ${review.content.slice(0, 30)}...`);
