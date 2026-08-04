@@ -1,4 +1,7 @@
 node_modules/
 .env
 chrome-profile/
+logs/
+debug-*.png
+inspect-*.png
 *.log
