@@ -11,6 +11,7 @@
 import puppeteer from "puppeteer";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { sendKakao } from "./notify.js";
 
 // .env 파일이 있으면 읽기 (Node 20.6+ 내장, 별도 패키지 불필요)
 // 시스템 환경변수가 이미 있으면 그쪽이 우선이므로, .env 값을 항상 덮어쓴다.
@@ -555,6 +556,7 @@ async function main() {
         }
       } catch (e) {
         console.error(`   지점 처리 실패: ${e.message}`);
+        if (e.message.includes("로그인")) report.needLogin = true;
         report.skipped++;
       } finally {
         if (page) await page.close().catch(() => {});
@@ -573,7 +575,37 @@ async function main() {
   );
   console.log("═════════════════════════════════════\n");
 
+  await sendReport(report, startTime);
+
   if (report.success === 0 && report.fail > 0) process.exit(1);
+}
+
+// ─── 카톡 리포트 ──────────────────────────────────────────────────────────────
+async function sendReport(report, startTime, fatal = null) {
+  const byBranch = {};
+  for (const d of report.details) {
+    byBranch[d.branch] ??= { ok: 0, ng: 0 };
+    d.status === "✅" ? byBranch[d.branch].ok++ : byBranch[d.branch].ng++;
+  }
+
+  let msg;
+  if (fatal) {
+    msg = `🚨 리뷰봇 오류\n${startTime}\n\n${fatal}\n\n노트북에서 확인이 필요합니다.`;
+  } else if (report.needLogin) {
+    msg = `🔐 네이버 로그인 필요\n${startTime}\n\n노트북에서 아래를 실행해주세요.\ncd C:\\ai-staff\\naver_AI_review_Bot\nnode login.js`;
+  } else if (report.success === 0 && report.fail === 0) {
+    msg = `🐮 리뷰봇 실행 완료\n${startTime}\n\n새로 답글 달 리뷰가 없습니다 ✨`;
+  } else {
+    const lines = Object.entries(byBranch)
+      .map(([b, v]) => `· ${b}  성공 ${v.ok}건${v.ng ? ` / 실패 ${v.ng}건` : ""}`);
+    msg = `🐮 리뷰봇 실행 완료\n${startTime}\n\n${lines.join("\n")}\n\n합계 ✅ ${report.success}건`
+        + (report.fail ? ` / ❌ ${report.fail}건` : "");
+    if (report.fail) {
+      const reasons = [...new Set(report.details.filter((d) => d.error).map((d) => d.error.split(" —")[0]))];
+      msg += `\n\n실패 사유\n${reasons.slice(0, 3).map((r) => `· ${r}`).join("\n")}`;
+    }
+  }
+  await sendKakao(msg);
 }
 
 // login.js 가 이 파일을 import 할 때는 실행하지 않는다.
@@ -581,8 +613,10 @@ const isDirectRun =
   process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 
 if (isDirectRun) {
-  main().catch((e) => {
+  main().catch(async (e) => {
     console.error("💥 Fatal:", e.message);
+    const now = new Date().toLocaleString("ko-KR", { timeZone: "Asia/Seoul" });
+    await sendReport({ success: 0, fail: 0, skipped: 0, details: [] }, now, e.message).catch(() => {});
     process.exit(1);
   });
 }
