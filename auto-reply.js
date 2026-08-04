@@ -11,7 +11,7 @@
 import puppeteer from "puppeteer";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { sendKakao } from "./notify.js";
+import { sendNotify } from "./notify.js";
 
 // .env 파일이 있으면 읽기 (Node 20.6+ 내장, 별도 패키지 불필요)
 // 시스템 환경변수가 이미 있으면 그쪽이 우선이므로, .env 값을 항상 덮어쓴다.
@@ -605,7 +605,7 @@ async function sendReport(report, startTime, fatal = null) {
       msg += `\n\n실패 사유\n${reasons.slice(0, 3).map((r) => `· ${r}`).join("\n")}`;
     }
   }
-  await sendKakao(msg);
+  await sendNotify(msg);
 }
 
 // login.js 가 이 파일을 import 할 때는 실행하지 않는다.

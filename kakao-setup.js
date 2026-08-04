@@ -47,9 +47,22 @@ const authUrl =
   `https://kauth.kakao.com/oauth/authorize?client_id=${restKey}` +
   `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&response_type=code&scope=talk_message`;
 
-console.log("\n아래 주소를 브라우저에 붙여넣고 '동의하고 계속하기'를 눌러주세요.\n");
+// 복사 과정에서 주소가 잘리는 사고를 막기 위해 브라우저를 직접 연다
+const { spawn } = await import("node:child_process");
+try {
+  if (process.platform === "win32") spawn("cmd", ["/c", "start", "", authUrl], { detached: true });
+  else if (process.platform === "darwin") spawn("open", [authUrl], { detached: true });
+  else spawn("xdg-open", [authUrl], { detached: true });
+  console.log("\n브라우저를 열었습니다. '동의하고 계속하기'를 눌러주세요.");
+} catch {
+  console.log("\n브라우저 자동 실행 실패 — 아래 주소를 직접 열어주세요.");
+}
+
+console.log("\n(수동으로 여실 경우 아래 주소 전체를 복사하세요)");
 console.log(authUrl);
-console.log("\n동의가 끝나면 자동으로 진행됩니다. 기다리는 중...\n");
+console.log(`\nRedirect URI: ${REDIRECT_URI}`);
+console.log("→ 카카오 개발자 콘솔의 [카카오 로그인 > 고급] 값과 정확히 같아야 합니다.\n");
+console.log("동의가 끝나면 자동으로 진행됩니다. 기다리는 중...\n");
 
 const code = await new Promise((resolve, reject) => {
   const server = http.createServer((req, res) => {
