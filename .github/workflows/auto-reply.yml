@@ -1,10 +1,21 @@
-name: 네이버 리뷰 자동 답글
+name: 네이버 리뷰 자동 답글 (사용 안 함)
+
+# ⚠️ 이 워크플로는 더 이상 쓰지 않습니다.
+#
+# 리뷰봇은 2026-08-05부터 집 노트북에서 돌아갑니다.
+#   위치   C:\ai-staff\naver_AI_review_Bot
+#   실행   윈도우 작업 스케줄러 (매일 09:00 / 00:30)
+#
+# GitHub Actions에서는 다음 이유로 동작할 수 없습니다.
+#   · 네이버가 데이터센터 IP에 캡차를 띄워 로그인이 막힘
+#   · 로그인 세션(chrome-profile)을 유지할 수 없음
+#
+# 예약 실행을 지우지 않으면 매일 두 번 실패 메일이 옵니다.
+# 되돌릴 여지를 남기기 위해 파일은 두되, schedule 만 제거했습니다.
+# 수동 실행은 가능하지만 캡차 때문에 성공하지 않습니다.
 
 on:
-  schedule:
-    - cron: "0 0 * * *"   # 매일 오전 09:00 KST (UTC 00:00)
-    - cron: "0 9 * * *"   # 매일 오후 18:00 KST (UTC 09:00)
-  workflow_dispatch:       # 수동 실행 가능
+  workflow_dispatch:
 
 jobs:
   auto-reply:
@@ -12,20 +23,9 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - name: 코드 체크아웃
-        uses: actions/checkout@v4
-
-      - name: Node.js 설정
-        uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-
-      - name: 의존성 설치
-        run: npm install
-
-      - name: 자동 답글 실행
-        env:
-          NAVER_NID_AUT: ${{ secrets.NAVER_NID_AUT }}
-          NAVER_NID_SES: ${{ secrets.NAVER_NID_SES }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: node auto-reply.js
+      - name: 안내
+        run: |
+          echo "이 워크플로는 사용하지 않습니다."
+          echo "리뷰봇은 집 노트북(C:\\ai-staff\\naver_AI_review_Bot)에서 실행됩니다."
+          echo "작업 스케줄러: 리뷰봇_오전9시 / 리뷰봇_밤12시반"
+          exit 0
