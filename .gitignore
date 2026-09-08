@@ -5,3 +5,7 @@ logs/
 debug-*.png
 inspect-*.png
 *.log
+
+# 정찰 도구가 남기는 화면 캡처 — 손님 리뷰가 찍혀 있어 올리면 안 됩니다
+inspect.png
+debug.png
