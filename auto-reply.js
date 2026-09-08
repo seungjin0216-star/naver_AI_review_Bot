@@ -31,10 +31,19 @@ try {
   }
 } catch { /* .env 없으면 시스템 환경변수 사용 */ }
 
+// active: false 인 지점은 건너뜁니다.
+// ⚠️ 지우지 않고 꺼두는 이유 — 나중에 원당·다산을 붙일 때 businessId·bookingBusinessId 를
+//    어디서 어떻게 가져오는지 형식을 참고할 수 있습니다. 지우면 다시 알아내야 합니다.
 export const BRANCHES = [
-  { name: "백석직영점", businessId: "8250200",  placeId: "1757412660", bookingBusinessId: "898097",  greeting: "장수한우곱창 백석직영점" },
-  { name: "마곡발산점", businessId: "11542564", placeId: "2073101570", bookingBusinessId: "1482386", greeting: "장수한우곱창 마곡발산점" },
+  { name: "백석직영점", businessId: "8250200",  placeId: "1757412660", bookingBusinessId: "898097",  greeting: "장수한우곱창 백석직영점", active: true },
+
+  // ⚠️ 2026-09-07 폐업. 네이버 플레이스가 내려가 리뷰 페이지 자체가 없습니다.
+  //    켜둔 채로는 매번 화면을 40초씩 기다렸다가 실패했습니다.
+  { name: "마곡발산점", businessId: "11542564", placeId: "2073101570", bookingBusinessId: "1482386", greeting: "장수한우곱창 마곡발산점", active: false },
 ];
+
+// 실제로 돌릴 지점만
+export const ACTIVE_BRANCHES = BRANCHES.filter((b) => b.active !== false);
 
 // 답글 미등록 리뷰만 보이는 주소 (hasReply=false)
 export function reviewUrl(branch) {
@@ -96,9 +105,39 @@ const CANDIDATES_QUERY = `query GetReviewReplyCandidates($id: String!) {
 `;
 
 // ─── 브라우저 ─────────────────────────────────────────────────────────────────
-// 전용 크롬 프로필을 사용한다. 로그인 세션(쿠키 전체)이 이 폴더에 저장돼 있어
-// 별도로 쿠키를 주입할 필요가 없다.
+//
+// 두 가지 방식이 있다. 위에서부터 시도한다.
+//
+//   ① 이미 켜져 있는 진짜 크롬에 붙기   (CHROME_DEBUG_PORT 를 .env 에 적었을 때)
+//   ② 봇 전용 프로필로 크롬을 새로 띄우기 (예전 방식)
+//
+// ⚠️ 왜 ①이 필요한가 — 2026-09-07
+//    네이버가 자동화 브라우저를 알아보고 리뷰 데이터만 막기 시작했다.
+//    QR 로그인까지 해도 「네이버 로그인이 필요한 기능입니다」 모달이 떴다.
+//    메뉴는 다 보이는데 리뷰만 안 보이는 상태라 로그인 문제로 보이지도 않았다.
+//    사장님이 평소 쓰는 크롬에 그대로 올라타면 네이버 눈에는 사람과 구별되지 않는다.
+//
+// ⚠️ ①로 붙었을 때는 브라우저를 닫으면 안 된다. 사장님 크롬이 같이 꺼진다.
+//    그래서 아래에 __attached 표식을 달아두고, 끝낼 때 disconnect 만 한다.
+export const DEBUG_PORT = (process.env.CHROME_DEBUG_PORT || "").trim();
+
 export async function launchBrowser(headless = HEADLESS) {
+  if (DEBUG_PORT) {
+    try {
+      const attached = await puppeteer.connect({
+        browserURL: `http://127.0.0.1:${DEBUG_PORT}`,
+        defaultViewport: null,
+      });
+      attached.__attached = true;
+      console.log(`   🔗 켜져 있는 크롬에 붙었습니다 (포트 ${DEBUG_PORT})`);
+      return attached;
+    } catch (e) {
+      console.log(`   ⚠️ 포트 ${DEBUG_PORT} 의 크롬에 못 붙었습니다 — 전용 프로필로 진행합니다.`);
+      console.log(`      「봇용 크롬」 바로가기로 크롬을 켜두셨는지 확인해주세요.`);
+      console.log(`      (${e.message})`);
+    }
+  }
+
   const options = {
     userDataDir: PROFILE_DIR,
     headless,
@@ -153,6 +192,25 @@ export async function openReviewPage(browser, branch) {
     await page.waitForSelector(CARD_SEL, { timeout: 40000 });
   } catch {
     await assertLoggedInDeep(page, branch.businessId);
+
+    // ⚠️ 2026-09-07 — 여기가 이번 사고의 핵심이었다.
+    //
+    //    예전에는 카드를 못 찾으면 무조건 「미답글이 한 건도 없습니다 ✨」 라고 했다.
+    //    그런데 네이버가 리뷰를 막았을 때도 카드가 없다. 둘이 구별이 안 됐다.
+    //    그래서 봇은 몇 주 동안 「새 리뷰 없음」 문자만 보냈고,
+    //    사장님은 잘 돌고 있다고 믿으셨다.
+    //
+    //    진짜로 리뷰가 없을 때 네이버는 「아직, 등록된 리뷰가 없습니다」 라고 적는다.
+    //    그 문구가 없으면 화면을 못 읽은 것이다. 조용히 넘기지 않고 오류로 올린다.
+    const 진짜빈화면 = await page.evaluate(() =>
+      (document.body?.innerText || "").includes("아직, 등록된 리뷰가 없습니다")
+    );
+
+    if (!진짜빈화면) {
+      await dumpScreen(page, branch.businessId + "-nocard");
+      throw new Error("리뷰 화면을 못 읽었습니다 — 네이버가 화면을 바꿨거나 자동화를 막고 있습니다");
+    }
+
     console.log("   미답글이 한 건도 없습니다 ✨");
     return page; // 카드가 0건일 수도 있으므로 오류로 처리하지 않는다
   }
@@ -506,7 +564,7 @@ async function main() {
   const browser = await launchBrowser();
 
   try {
-    for (const branch of BRANCHES) {
+    for (const branch of ACTIVE_BRANCHES) {
       console.log(`\n📍 [${branch.name}] 처리 중...`);
 
       let page = null;
@@ -557,13 +615,16 @@ async function main() {
       } catch (e) {
         console.error(`   지점 처리 실패: ${e.message}`);
         if (e.message.includes("로그인")) report.needLogin = true;
+        if (e.message.includes("못 읽었")) report.blocked = true;
         report.skipped++;
       } finally {
         if (page) await page.close().catch(() => {});
       }
     }
   } finally {
-    await browser.close();
+    // ⚠️ 붙어서 쓰던 크롬은 닫으면 안 된다. 사장님 크롬이 같이 꺼진다.
+    if (browser.__attached) await browser.disconnect().catch(() => {});
+    else await browser.close();
   }
 
   console.log("\n════════════ 결과 리포트 ════════════");
@@ -596,6 +657,10 @@ async function sendReport(report, startTime, fatal = null) {
     msg = `[리뷰봇 오류] ${t}\n${fatal}\n노트북 확인이 필요합니다.`;
   } else if (report.needLogin) {
     msg = `[리뷰봇] ${t} 네이버 로그인 만료\n노트북에서 실행: node login.js`;
+  } else if (report.blocked) {
+    // ⚠️ 「새 리뷰 없음」과 반드시 구분해서 보낸다. 이 둘을 같은 문자로 보내다
+    //    몇 주를 놓쳤다. 이 문자가 오면 봇이 화면을 못 보고 있다는 뜻이다.
+    msg = `[리뷰봇] ${t} ⚠️리뷰 화면을 못 읽음\n네이버 차단/화면변경 의심. 노트북 확인 필요`;
   } else if (report.success === 0 && report.fail === 0) {
     msg = `[리뷰봇] ${t} 새 리뷰 없음`;
   } else {

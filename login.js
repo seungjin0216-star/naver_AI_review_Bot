@@ -8,7 +8,11 @@
 import readline from "node:readline/promises";
 import { launchBrowser, PROFILE_DIR, hideAutomation } from "./auto-reply.js";
 
-const CHECK_URL = "https://smartplace.naver.com/bizes/place/8250200/reviews";
+// ⚠️ 2026-09-07 — 옛 주소(smartplace)로 확인하고 있었다.
+//    봇이 실제로 쓰는 건 new.smartplace 인데, 옛 주소는 통과하고 새 주소는 막혀서
+//    「✅ 로그인 성공」이 떠도 실제로는 안 되는 상태였다. 잘못된 안심이었다.
+const CHECK_URL = "https://new.smartplace.naver.com/bizes/place/8250200/reviews"
+                + "?bookingBusinessId=898097&hasReply=false&menu=visitor";
 
 console.log(`\n🔐 네이버 로그인`);
 console.log(`   프로필 위치: ${PROFILE_DIR}\n`);
