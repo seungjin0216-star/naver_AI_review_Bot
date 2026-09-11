@@ -181,17 +181,29 @@ function assertLoggedIn(page) {
 // ─── 리뷰 페이지 열기 ─────────────────────────────────────────────────────────
 export async function openReviewPage(browser, branch) {
   const page = await browser.newPage();
-  await hideAutomation(page);
 
-  const url = reviewUrl(branch);
-  console.log(`   이동 중: ${url}`);
-  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+  // ⚠️ 2026-09-11 — 여기서 오류가 나면 이 탭이 영영 안 닫혔다.
+  //    부르는 쪽은 `let page = null` 로 시작하는데, 이 함수가 도중에 실패하면
+  //    page 에 아무것도 안 담기고, finally 의 `if (page)` 가 그냥 넘어갔다.
+  //    로그인이 풀린 뒤로 실행될 때마다 탭이 하나씩 쌓였다.
+  //    ⚠️ 붙어 쓰는 크롬(CHROME_DEBUG_PORT)에서는 이게 사장님 크롬을 무겁게 만든다.
+  //    그래서 이 함수 안에서 생긴 문제는 이 함수가 치우고 나간다.
+  const 닫고던지기 = async (err) => {
+    await page.close().catch(() => {});
+    throw err;
+  };
 
-  // 리뷰 카드가 그려질 때까지 대기 (최대 40초)
   try {
-    await page.waitForSelector(CARD_SEL, { timeout: 40000 });
-  } catch {
-    await assertLoggedInDeep(page, branch.businessId);
+    await hideAutomation(page);
+    const url = reviewUrl(branch);
+    console.log(`   이동 중: ${url}`);
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+
+    // 리뷰 카드가 그려질 때까지 대기 (최대 40초)
+    try {
+      await page.waitForSelector(CARD_SEL, { timeout: 40000 });
+    } catch {
+      await assertLoggedInDeep(page, branch.businessId);
 
     // ⚠️ 2026-09-07 — 여기가 이번 사고의 핵심이었다.
     //
@@ -202,21 +214,25 @@ export async function openReviewPage(browser, branch) {
     //
     //    진짜로 리뷰가 없을 때 네이버는 「아직, 등록된 리뷰가 없습니다」 라고 적는다.
     //    그 문구가 없으면 화면을 못 읽은 것이다. 조용히 넘기지 않고 오류로 올린다.
-    const 진짜빈화면 = await page.evaluate(() =>
-      (document.body?.innerText || "").includes("아직, 등록된 리뷰가 없습니다")
-    );
+      const 진짜빈화면 = await page.evaluate(() =>
+        (document.body?.innerText || "").includes("아직, 등록된 리뷰가 없습니다")
+      );
 
-    if (!진짜빈화면) {
-      await dumpScreen(page, branch.businessId + "-nocard");
-      throw new Error("리뷰 화면을 못 읽었습니다 — 네이버가 화면을 바꿨거나 자동화를 막고 있습니다");
+      if (!진짜빈화면) {
+        await dumpScreen(page, branch.businessId + "-nocard");
+        throw new Error("리뷰 화면을 못 읽었습니다 — 네이버가 화면을 바꿨거나 자동화를 막고 있습니다");
+      }
+
+      console.log("   미답글이 한 건도 없습니다 ✨");
+      return page; // 카드가 0건일 수도 있으므로 오류로 처리하지 않는다
     }
+    await delay(2000);
+    await assertLoggedInDeep(page, branch.businessId);
+    return page;
 
-    console.log("   미답글이 한 건도 없습니다 ✨");
-    return page; // 카드가 0건일 수도 있으므로 오류로 처리하지 않는다
+  } catch (err) {
+    return 닫고던지기(err);   // 열어둔 탭을 치우고 오류를 위로 넘긴다
   }
-  await delay(2000);
-  await assertLoggedInDeep(page, branch.businessId);
-  return page;
 }
 
 async function dumpScreen(page, tag) {
