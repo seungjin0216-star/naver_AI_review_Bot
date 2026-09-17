@@ -10,6 +10,7 @@
  */
 import puppeteer from "puppeteer";
 import path from "node:path";
+import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { sendNotify } from "./notify.js";
 
@@ -121,21 +122,90 @@ const CANDIDATES_QUERY = `query GetReviewReplyCandidates($id: String!) {
 //    그래서 아래에 __attached 표식을 달아두고, 끝낼 때 disconnect 만 한다.
 export const DEBUG_PORT = (process.env.CHROME_DEBUG_PORT || "").trim();
 
+// ⚠️ 2026-09-17 — 봇이 스스로 「봇용 크롬」을 켠다
+//
+//   무슨 일이 있었나
+//     사장님이 화면에 떠 있던 크롬 창을 닫으셨습니다. 당연한 일입니다 —
+//     닫으면 안 되는 창이라는 표시가 아무 데도 없었으니까요.
+//     그때부터 봇은 전용 프로필로 조용히 후퇴했고, 그 프로필은 네이버가
+//     리뷰를 안 보여주므로 결과만 보면 「로그인 만료」처럼 보였습니다.
+//     진짜 원인(크롬이 꺼짐)은 로그 한 줄에만 있었고 아무도 안 봤습니다.
+//
+//   ⚠️ 그래서 후퇴를 없앱니다.
+//      전용 프로필로는 어차피 리뷰를 못 읽습니다. 후퇴해봐야 실패만 늘고
+//      원인은 가려집니다. 대신 봇이 직접 크롬을 켜고, 그래도 안 되면 멈춥니다.
+//
+//   ⚠️ 노트북은 덮개를 닫아도 계속 켜져 있게 해두셨습니다 (사장님 설정).
+//      그래서 한 번 켠 크롬은 몇 주씩 살아 있습니다. 재부팅은 필요 없습니다.
+//      끊기는 계기는 사실상 「크롬 창을 닫음」 하나뿐입니다.
+const CHROME_EXE = process.env.CHROME_EXE
+  || "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+const CHROME_BOT_DIR = process.env.CHROME_BOT_DIR || "C:\\chrome-bot";
+
+const 잠깐 = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function 붙기_() {
+  const attached = await puppeteer.connect({
+    browserURL: `http://127.0.0.1:${DEBUG_PORT}`,
+    defaultViewport: null,
+  });
+  attached.__attached = true;
+  return attached;
+}
+
+/** 봇용 크롬을 띄운다. 이미 떠 있으면 크롬이 알아서 아무것도 안 한다. */
+function 봇용크롬_켜기_() {
+  const args = [
+    `--remote-debugging-port=${DEBUG_PORT}`,
+    `--user-data-dir=${CHROME_BOT_DIR}`,
+    "--no-first-run",
+    "--no-default-browser-check",
+  ];
+  const child = spawn(CHROME_EXE, args, { detached: true, stdio: "ignore" });
+  child.unref();
+}
+
 export async function launchBrowser(headless = HEADLESS) {
   if (DEBUG_PORT) {
+    // ① 이미 켜져 있으면 그대로 붙는다
     try {
-      const attached = await puppeteer.connect({
-        browserURL: `http://127.0.0.1:${DEBUG_PORT}`,
-        defaultViewport: null,
-      });
-      attached.__attached = true;
+      const b = await 붙기_();
       console.log(`   🔗 켜져 있는 크롬에 붙었습니다 (포트 ${DEBUG_PORT})`);
-      return attached;
+      return b;
     } catch (e) {
-      console.log(`   ⚠️ 포트 ${DEBUG_PORT} 의 크롬에 못 붙었습니다 — 전용 프로필로 진행합니다.`);
-      console.log(`      「봇용 크롬」 바로가기로 크롬을 켜두셨는지 확인해주세요.`);
-      console.log(`      (${e.message})`);
+      console.log(`   ⚠️ 포트 ${DEBUG_PORT} 에 크롬이 없습니다 — 봇용 크롬을 켭니다.`);
     }
+
+    // ② 없으면 직접 켜고 기다린다 (2초씩 최대 10번 = 20초)
+    try {
+      봇용크롬_켜기_();
+    } catch (e) {
+      throw new Error(
+        `봇용 크롬을 못 켰습니다.\n` +
+        `   크롬 위치: ${CHROME_EXE}\n` +
+        `   위치가 다르면 .env 에 CHROME_EXE 를 적어주세요.\n` +
+        `   (${e.message})`
+      );
+    }
+
+    for (let i = 1; i <= 10; i++) {
+      await 잠깐(2000);
+      try {
+        const b = await 붙기_();
+        console.log(`   🔗 봇용 크롬을 켜서 붙었습니다 (${i * 2}초 걸림)`);
+        return b;
+      } catch (_) { /* 아직 안 떴다 */ }
+    }
+
+    // ③ 20초를 기다려도 안 되면 멈춘다. 후퇴하지 않는다.
+    throw new Error(
+      `봇용 크롬에 못 붙었습니다 (포트 ${DEBUG_PORT}).\n` +
+      `   봇이 직접 켜봤지만 20초 안에 안 떴습니다.\n` +
+      `   ⚠️ 전용 프로필로는 네이버가 리뷰를 안 보여주므로 후퇴하지 않고 멈춥니다.\n` +
+      `   확인: 크롬 주소창에 localhost:${DEBUG_PORT} 를 쳐보세요.\n` +
+      `   크롬 위치: ${CHROME_EXE}\n` +
+      `   프로필:   ${CHROME_BOT_DIR}`
+    );
   }
 
   const options = {
