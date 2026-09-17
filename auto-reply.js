@@ -11,6 +11,7 @@
 import puppeteer from "puppeteer";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import fsSync from "node:fs";
 import { fileURLToPath } from "node:url";
 import { sendNotify } from "./notify.js";
 
@@ -138,8 +139,25 @@ export const DEBUG_PORT = (process.env.CHROME_DEBUG_PORT || "").trim();
 //   ⚠️ 노트북은 덮개를 닫아도 계속 켜져 있게 해두셨습니다 (사장님 설정).
 //      그래서 한 번 켠 크롬은 몇 주씩 살아 있습니다. 재부팅은 필요 없습니다.
 //      끊기는 계기는 사실상 「크롬 창을 닫음」 하나뿐입니다.
-const CHROME_EXE = process.env.CHROME_EXE
-  || "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+// ⚠️ 2026-09-17 — 크롬 위치를 한 군데로 박았다가 ENOENT 로 죽었습니다.
+//    윈도우는 설치 방식에 따라 크롬이 세 곳 중 하나에 있습니다.
+//    있는 곳을 찾아 쓰고, 없으면 죽지 말고 어디를 봤는지 말합니다.
+const CHROME_후보_ = [
+  process.env.CHROME_EXE,
+  "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+  "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+  process.env.LOCALAPPDATA
+    ? path.join(process.env.LOCALAPPDATA, "Google", "Chrome", "Application", "chrome.exe")
+    : null,
+].filter(Boolean);
+
+function 크롬찾기_() {
+  for (const p of CHROME_후보_) {
+    try { if (fsSync.existsSync(p)) return p; } catch (_) {}
+  }
+  return null;
+}
+
 const CHROME_BOT_DIR = process.env.CHROME_BOT_DIR || "C:\\chrome-bot";
 
 const 잠깐 = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -155,13 +173,27 @@ async function 붙기_() {
 
 /** 봇용 크롬을 띄운다. 이미 떠 있으면 크롬이 알아서 아무것도 안 한다. */
 function 봇용크롬_켜기_() {
+  const exe = 크롬찾기_();
+  if (!exe) {
+    throw new Error(
+      `크롬을 못 찾았습니다. 아래를 찾아봤습니다.\n` +
+      CHROME_후보_.map((p) => `      · ${p}`).join("\n") +
+      `\n   크롬이 다른 곳에 있으면 .env 에 CHROME_EXE 를 적어주세요.`
+    );
+  }
+  console.log(`   📁 크롬: ${exe}`);
   const args = [
     `--remote-debugging-port=${DEBUG_PORT}`,
     `--user-data-dir=${CHROME_BOT_DIR}`,
     "--no-first-run",
     "--no-default-browser-check",
   ];
-  const child = spawn(CHROME_EXE, args, { detached: true, stdio: "ignore" });
+  const child = spawn(exe, args, { detached: true, stdio: "ignore" });
+  // ⚠️ error 이벤트를 안 받으면 ENOENT 가 throw 로 안 오고 프로세스를 통째로 죽입니다.
+  //    2026-09-17 에 실제로 그렇게 죽었습니다.
+  child.on("error", (e) => {
+    console.log(`   ⚠️ 크롬을 띄우다 오류: ${e.message}`);
+  });
   child.unref();
 }
 
@@ -182,9 +214,7 @@ export async function launchBrowser(headless = HEADLESS) {
     } catch (e) {
       throw new Error(
         `봇용 크롬을 못 켰습니다.\n` +
-        `   크롬 위치: ${CHROME_EXE}\n` +
-        `   위치가 다르면 .env 에 CHROME_EXE 를 적어주세요.\n` +
-        `   (${e.message})`
+        `   ${e.message}`
       );
     }
 
@@ -203,7 +233,7 @@ export async function launchBrowser(headless = HEADLESS) {
       `   봇이 직접 켜봤지만 20초 안에 안 떴습니다.\n` +
       `   ⚠️ 전용 프로필로는 네이버가 리뷰를 안 보여주므로 후퇴하지 않고 멈춥니다.\n` +
       `   확인: 크롬 주소창에 localhost:${DEBUG_PORT} 를 쳐보세요.\n` +
-      `   크롬 위치: ${CHROME_EXE}\n` +
+      `   크롬 위치: ${크롬찾기_() || "(못 찾음)"}\n` +
       `   프로필:   ${CHROME_BOT_DIR}`
     );
   }
